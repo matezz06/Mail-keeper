@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#F3F5F2">
+<title>Hlídač pošty</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Hlídač pošty">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    --bg:#F3F5F2; --card:#FFF; --ink:#17211B; --muted:#5F6E64; --line:#DFE5DE;
+    --pkg:#2B5BD7; --pkg-soft:#E8EEFC; --inv:#1E7A5A; --inv-soft:#E4F2EC;
+    --urgent:#C7351B; --urgent-soft:#FBE9E4; --warn:#B07A0F; --warn-soft:#FBF1DB; --ok:#4C6455;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased;padding-bottom:env(safe-area-inset-bottom)}
+  .wrap{max-width:760px;margin:0 auto;padding:20px 16px 70px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+  h1{font-size:clamp(24px,6vw,32px);font-weight:700;letter-spacing:-.02em}
+  h1 .dot{color:var(--pkg)}
+  .lastscan{font-size:12px;color:var(--muted);text-align:right}
+  button{font-family:inherit;cursor:pointer;border:none}
+  .scanbar{display:flex;gap:8px;align-items:center;margin:14px 0 18px;flex-wrap:wrap}
+  .btn-scan{background:var(--ink);color:#fff;font-size:15px;font-weight:600;padding:12px 20px;border-radius:999px;display:inline-flex;align-items:center;gap:8px}
+  .btn-scan:disabled{background:#9AA69E;cursor:wait}
+  .btn-sec{background:var(--card);border:1px solid var(--line);border-radius:999px;font-size:13px;font-weight:600;padding:9px 14px;color:var(--ink)}
+  .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:16px;-webkit-overflow-scrolling:touch}
+  .strip:empty{display:none}
+  .chip{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:8px 12px;font-size:12px;min-width:118px}
+  .chip b{font-size:13px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip .when{font-weight:700;font-size:14px}
+  .chip.c-urgent{border-color:var(--urgent);background:var(--urgent-soft)} .chip.c-urgent .when{color:var(--urgent)}
+  .chip.c-warn{border-color:#E3C98F;background:var(--warn-soft)} .chip.c-warn .when{color:var(--warn)}
+  .tabs{display:flex;gap:8px;margin-bottom:16px}
+  .tab{flex:1;padding:12px 8px;border-radius:14px;border:1px solid var(--line);background:var(--card);font-size:14px;font-weight:600;color:var(--muted);display:flex;align-items:center;justify-content:center;gap:7px}
+  .tab .count{font-size:12.5px;background:var(--bg);border-radius:999px;padding:1px 8px}
+  .tab.a-pkg{background:var(--pkg-soft);border-color:var(--pkg);color:var(--pkg)} .tab.a-pkg .count{background:var(--pkg);color:#fff}
+  .tab.a-inv{background:var(--inv-soft);border-color:var(--inv);color:var(--inv)} .tab.a-inv .count{background:var(--inv);color:#fff}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 16px;margin-bottom:11px}
+  .card.resolved{opacity:.55}
+  .card-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+  .card h3{font-size:16px;font-weight:600}
+  .carrier{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;border-radius:6px;padding:3px 8px;margin-bottom:6px}
+  .carrier.pkg{background:var(--pkg-soft);color:var(--pkg)} .carrier.inv{background:var(--inv-soft);color:var(--inv)}
+  .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 16px;margin-top:10px}
+  .fact{font-size:13px}
+  .fact .lbl{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin-bottom:1px}
+  .fact .val{font-weight:500;word-break:break-word}
+  .fact .val.money{font-weight:700;font-size:15px}
+  .due{font-size:12px;font-weight:600;border-radius:8px;padding:4px 9px;white-space:nowrap}
+  .due.d-urgent{background:var(--urgent-soft);color:var(--urgent)}
+  .due.d-warn{background:var(--warn-soft);color:var(--warn)}
+  .due.d-ok{background:var(--bg);color:var(--ok)}
+  .note{margin-top:9px;font-size:13px;color:var(--muted);line-height:1.45}
+  .card-actions{margin-top:12px}
+  .btn-done{background:var(--bg);border:1px solid var(--line);border-radius:999px;font-size:13px;font-weight:600;padding:7px 14px;color:var(--ink)}
+  .empty{border:1.5px dashed var(--line);border-radius:14px;padding:32px 18px;text-align:center;color:var(--muted);font-size:14px;line-height:1.55}
+  .empty b{color:var(--ink)}
+  .msg{background:var(--urgent-soft);border:1px solid #EFC4BA;color:#7C2413;border-radius:14px;padding:12px 15px;font-size:13.5px;margin-bottom:14px;line-height:1.5}
+  .msg.info{background:var(--inv-soft);border-color:#BFDCCF;color:#134D38}
+  .section-label{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:20px 0 9px;font-weight:600}
+  footer{margin-top:30px;font-size:11.5px;color:var(--muted);line-height:1.6}
+  /* setup screen */
+  .setup{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 18px;line-height:1.55;font-size:14px}
+  .setup h2{font-size:18px;margin-bottom:10px}
+  .setup ol{margin:10px 0 14px 20px}
+  .setup li{margin-bottom:6px}
+  .setup input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;font-size:14px;font-family:inherit;margin:6px 0 12px}
+  .setup code{background:var(--bg);padding:1px 6px;border-radius:5px;font-size:12.5px}
+  a{color:var(--pkg)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+"use strict";
+/* ================= config & storage ================= */
+const LS = {
+  clientId: "hp_client_id",
+  token: "hp_token",           // {access_token, expires_at}
+  data: "hp_data_v1",          // {packages:[], invoices:[], lastScan}
+};
+const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+let state = load(LS.data) || { packages: [], invoices: [], lastScan: null };
+let tab = "pkg";
+let scanning = false;
+let message = null; // {text, kind}
+let tokenClient = null;
+
+function load(k){ try{ const v = localStorage.getItem(k); return v?JSON.parse(v):null; }catch(e){ return null; } }
+function save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+
+/* ================= date helpers ================= */
+const CZ_MONTHS = {ledna:1,unora:2,února:2,brezna:3,března:3,dubna:4,kvetna:5,května:5,cervna:6,června:6,cervence:7,července:7,srpna:8,zari:9,září:9,rijna:10,října:10,listopadu:11,prosince:12};
+function pad(n){return String(n).padStart(2,"0");}
+function iso(y,m,d){return `${y}-${pad(m)}-${pad(d)}`;}
+function inferYear(m,d){
+  const now = new Date(); const y = now.getFullYear();
+  const cand = new Date(y, m-1, d);
+  // if the date is more than ~5 months in the past, assume next year
+  if ((now - cand) / 86400000 > 150) return y+1;
+  return y;
+}
+function czDateToIso(txt){
+  // "06. srpna" / "6. srpna 2026"
+  let m = txt.match(/(\d{1,2})\.?\s*([a-záéěíóúůýžščřď]+)\s*(\d{4})?/i);
+  if(!m) return null;
+  const day = +m[1]; const mon = CZ_MONTHS[m[2].toLowerCase()];
+  if(!mon) return null;
+  const year = m[3] ? +m[3] : inferYear(mon, day);
+  return iso(year, mon, day);
+}
+function numDateToIso(txt){
+  // "30.07.2026" or "30. 7. 2026" or "30.7."
+  const m = txt.match(/(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})?/);
+  if(!m) return null;
+  const day=+m[1], mon=+m[2];
+  if(mon<1||mon>12||day<1||day>31) return null;
+  const year = m[3]?+m[3]:inferYear(mon,day);
+  return iso(year,mon,day);
+}
+function daysUntil(d){
+  if(!d) return null;
+  const t = Date.parse(d); if(isNaN(t)) return null;
+  const dt = new Date(t); dt.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((dt-today)/86400000);
+}
+function fmtDate(d){ const t=Date.parse(d); return isNaN(t)?(d||"—"):new Date(t).toLocaleDateString("cs-CZ"); }
+function dueInfo(dateStr){
+  const n = daysUntil(dateStr); if(n===null) return null;
+  if(n<0) return {cls:"d-urgent",chip:"c-urgent",txt:`Po termínu (${fmtDate(dateStr)})`,chipTxt:"Po termínu!"};
+  if(n===0) return {cls:"d-urgent",chip:"c-urgent",txt:"Dnes!",chipTxt:"Dnes"};
+  if(n===1) return {cls:"d-urgent",chip:"c-urgent",txt:"Zítra",chipTxt:"Zítra"};
+  if(n<=3) return {cls:"d-warn",chip:"c-warn",txt:`Za ${n} dny`,chipTxt:`Za ${n} dny`};
+  return {cls:"d-ok",chip:"",txt:`${fmtDate(dateStr)} (za ${n} dní)`,chipTxt:`Za ${n} dní`};
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+/* ================= Google auth ================= */
+function getClientId(){ return load(LS.clientId); }
+function tokenValid(){
+  const t = load(LS.token);
+  return t && t.access_token && t.expires_at && Date.now() < t.expires_at - 60000 ? t.access_token : null;
+}
+function initTokenClient(){
+  if(tokenClient || !window.google) return;
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: getClientId(),
+    scope: SCOPE,
+    callback: (resp)=>{
+      if(resp && resp.access_token){
+        save(LS.token, {access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in||3600)*1000});
+        runScan();
+      }else{
+        scanning=false; message={text:"Přihlášení ke Googlu se nepovedlo. Zkuste to znovu.",kind:"err"}; render();
+      }
+    },
+    error_callback: ()=>{ scanning=false; message={text:"Přihlášení bylo zrušeno.",kind:"err"}; render(); }
+  });
+}
+function requestToken(interactive){
+  initTokenClient();
+  if(!tokenClient){ message={text:"Google přihlášení se ještě načítá — zkuste to za pár sekund.",kind:"err"}; render(); return; }
+  tokenClient.requestAccessToken({prompt: interactive ? "consent" : ""});
+}
+function signOut(){
+  localStorage.removeItem(LS.token);
+  message={text:"Odhlášeno. Data zůstala uložená v telefonu.",kind:"info"}; render();
+}
+
+/* ================= Gmail fetch ================= */
+async function gmail(path, params){
+  const token = tokenValid();
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/"+path);
+  for(const [k,v] of Object.entries(params||{})){
+    if(Array.isArray(v)) v.forEach(x=>url.searchParams.append(k,x));
+    else if(v!=null) url.searchParams.set(k,v);
+  }
+  const r = await fetch(url, {headers:{Authorization:"Bearer "+token}});
+  if(r.status===401){ localStorage.removeItem(LS.token); throw new Error("AUTH"); }
+  if(!r.ok) throw new Error("Gmail API: "+r.status);
+  return r.json();
+}
+function b64(s){ return decodeURIComponent(escape(atob(s.replace(/-/g,"+").replace(/_/g,"/")))); }
+function extractBody(payload){
+  let plain="", html="";
+  const walk=(p)=>{
+    if(!p) return;
+    if(p.mimeType==="text/plain" && p.body && p.body.data) plain += b64(p.body.data);
+    else if(p.mimeType==="text/html" && p.body && p.body.data) html += b64(p.body.data);
+    (p.parts||[]).forEach(walk);
+  };
+  walk(payload);
+  if(plain) return plain;
+  return html.replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/\s+/g," ");
+}
+function header(msg,name){
+  const h=(msg.payload&&msg.payload.headers||[]).find(x=>x.name.toLowerCase()===name.toLowerCase());
+  return h?h.value:"";
+}
+
+/* ================= parsers (rule-based) ================= */
+function parsePackage(msg, subject, from, body, dateIso){
+  const f = from.toLowerCase();
+  const s = subject.toLowerCase();
+  const item = {carrier:null, shop:null, status:null, pickup_place:null, deadline:null, price:null, tracking:null, note:null, key:null, email_date:dateIso};
+
+  if(f.includes("zasilkovna") || f.includes("packeta")){
+    item.carrier="Zásilkovna";
+    const num = body.match(/Z\s?\d{3}\s?\d{4}\s?\d{3}/); if(num){item.tracking=num[0]; item.key=num[0].replace(/\s/g,"");}
+    const shop = body.match(/od odesilatele\s+([^\n,]+?)\s+je pro vás|odesilatele\s+([A-Za-z0-9ěščřžýáíéůú.\- ]{2,40})/i);
+    if(shop) item.shop=(shop[1]||shop[2]||"").trim();
+    if(s.includes("připravena")||body.includes("připravena na výdejním místě")){
+      item.status="Připraveno k vyzvednutí";
+      const place = body.match(/výdejním místě\s+([^.]{5,90})\./); if(place) item.pickup_place=place[1].trim();
+      const heslo = body.match(/[Hh]eslo pro vydání zásilky je\s+([A-Z0-9]{4,8})/); 
+      const dl = body.match(/nejpozději dne\s+([^.\n]{3,25})/);
+      if(dl) item.deadline = czDateToIso(dl[1]) || numDateToIso(dl[1]);
+      const dob = body.match(/[Dd]obírk[au][^0-9]{0,20}([\d\s]+[,.]?\d*)\s*(Kč|CZK)/);
+      if(dob) item.price = dob[1].replace(/\s+/g," ").trim()+" Kč";
+      item.note = heslo ? ("Heslo pro vydání: "+heslo[1]) : null;
+    } else if(s.includes("převzali")){ item.status="Na cestě (předáno Zásilkovně)"; }
+    else if(s.includes("vyzvednuta")||s.includes("doručena")){ item.status="Vyzvednuto/doručeno"; }
+    else item.status = subject;
+    return item.tracking||item.shop ? item : null;
+  }
+
+  if(f.includes("dpd.")){
+    item.carrier="DPD";
+    const num = body.match(/bal[íi]k\s+(\d{10,16})/i); if(num){item.tracking=num[1]; item.key="dpd"+num[1];}
+    if(body.match(/vrac|zůstal nevyzvednut/i)){ item.status="Nevyzvednuto — vrací se odesílateli"; item.note="Pokud o balík stále stojíte, domluvte se s odesílatelem na novém zaslání."; }
+    else if(body.match(/vyzvedněte|připraven/i)){
+      item.status="Připraveno k vyzvednutí";
+      const place = body.match(/v(?:e výdejním boxu| DPD_?box)?\s*([^\n]{5,90}?)(?:Kód|$)/i);
+      const box = body.match(/(?:v|místě:)\s*(DPD[_ ]?box[^\n]{3,80}?)(?:\s*Kód|\.|\n)/i);
+      if(box) item.pickup_place=box[1].trim(); else if(place) item.pickup_place=place[1].trim();
+      const code = body.match(/[Kk]ód pro otevření(?: schránky)?:\s*(\d{4,8})/); 
+      const dl = body.match(/[Dd]o\s+(\d{1,2}\.\d{1,2}\.\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
+      if(dl) item.deadline = numDateToIso(dl[1]);
+      const parts=[]; if(code) parts.push("Kód pro otevření: "+code[1]);
+      if(dl&&dl[2]) parts.push("čas do "+dl[2]);
+      item.note = parts.join(", ")||null;
+    } else item.status=subject;
+    return item.tracking?item:null;
+  }
+
+  if(f.includes("alza")){
+    item.carrier="Alza"; item.shop="Alza.cz";
+    const num = subject.match(/(\d{9,11})/) || body.match(/objedn[áa]vk[au][^\d]{0,10}(\d{9,11})/i);
+    if(num){item.tracking=num[1]; item.key="alza"+num[1];}
+    if(s.includes("alzaboxu")||body.includes("AlzaBox")){
+      item.carrier="AlzaBox"; item.status="Připraveno v AlzaBoxu";
+      const place = body.match(/AlzaBoxu?\s*[-–]?\s*([^\(\n]{5,80}?)\s*na adrese\s*([^\.\(]{5,80})/);
+      if(place) item.pickup_place = place[1].trim()+", "+place[2].trim();
+      const dl = body.match(/vyzvedn[ěe]te[^.]{0,40}?do\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i);
+      if(dl) item.deadline = numDateToIso(dl[1]);
+      if(!item.deadline) item.note="Úložní doba AlzaBoxů je krátká — termín ověřte v aplikaci Alza a vyzvedněte co nejdřív.";
+    }
+    else if(s.includes("chystáme")||s.includes("zpracov")) item.status="Objednávka se zpracovává";
+    else if(s.includes("expeduje")||s.includes("na cestě")) item.status="Expedováno";
+    else if(s.includes("děkujeme za objednávku")) return null; // duplicate of processing
+    else item.status=subject;
+    return item.tracking?item:null;
+  }
+
+  if(f.includes("ppl.")||f.includes("gls-")||f.includes("gls.")||f.includes("ceskaposta")||f.includes("cpost")||f.includes("balikovna")){
+    item.carrier = f.includes("ppl")?"PPL":(f.includes("gls")?"GLS":(f.includes("balikovna")?"Balíkovna":"Česká pošta"));
+    const num = body.match(/(\b[A-Z]{0,2}\d{8,16}\b)/); if(num){item.tracking=num[1]; item.key=item.carrier+num[1];}
+    if(body.match(/připraven|vyzvednut/i)) item.status="Připraveno k vyzvednutí";
+    else if(body.match(/doručím|doručení|kurýr/i)) item.status="Kurýr doručí";
+    else item.status=subject;
+    const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i);
+    if(dl) item.deadline=numDateToIso(dl[1]);
+    return item;
+  }
+
+  // generic shipping notification
+  if(/(zásilk|balík|balíček|doručen|vyzvednut|delivery|shipment|package|track)/i.test(subject+f)){
+    item.carrier="Zásilka"; item.shop=from.replace(/<.*/,"").trim()||from; item.status=subject;
+    item.key="gen"+(msg.id||subject).slice(0,24);
+    const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i);
+    if(dl) item.deadline=numDateToIso(dl[1]);
+    return item;
+  }
+  return null;
+}
+
+function parseInvoice(msg, subject, from, body, dateIso){
+  const text = subject+" "+body;
+  // skip confirmations of already-paid transactions
+  if(/(zaplacen|uhrazen|platba prob[ěe]hla|payment (was )?successful|potvrzen[íi] platby|vr[áa]cen[íi]|refund)/i.test(text)
+     && !/(upom[íi]nk|po splatnosti|nezaplacen)/i.test(text)) return null;
+  if(!/(faktur|splatnost|k [úu]hrad[ěe]|upom[íi]nk|vyúčtov|předpis platby|invoice|payment due|výzva k platbě)/i.test(text)) return null;
+
+  const item = {issuer: from.replace(/<.*/,"").replace(/"/g,"").trim()||from, subject: subject, amount:null, due_date:null, variable_symbol:null, account:null, note:null, key:null, email_date:dateIso};
+  const amt = body.match(/(?:částk[au]|celkem|k [úu]hrad[ěe]|amount)[^\d]{0,15}([\d\s]{1,12}[,.]?\d{0,2})\s*(Kč|CZK|EUR|€)/i)
+           || body.match(/([\d\s]{2,12}[,.]?\d{0,2})\s*(Kč|CZK)/);
+  if(amt) item.amount = amt[1].replace(/\s+/g," ").trim()+" "+(amt[2]==="€"?"EUR":amt[2]);
+  const due = body.match(/splatnost[i]?[^\d]{0,15}(\d{1,2}\.\s?\d{1,2}\.\s?\d{2,4})/i);
+  if(due) item.due_date = numDateToIso(due[1]);
+  const vs = body.match(/(?:VS|variabiln[íi] symbol)[:\s]*(\d{4,10})/i);
+  if(vs) item.variable_symbol = vs[1];
+  const acc = body.match(/(\d{2,6}-)?\d{6,10}\/\d{4}/);
+  if(acc) item.account = acc[0];
+  item.key = "inv-"+(item.variable_symbol || (msg.id||subject).slice(0,24));
+  return item;
+}
+
+/* ================= scan ================= */
+async function fetchMessages(query, max){
+  const list = await gmail("messages",{q:query,maxResults:max});
+  const out=[];
+  for(const m of (list.messages||[])){
+    try{
+      const full = await gmail("messages/"+m.id,{format:"full"});
+      out.push(full);
+    }catch(e){ if(e.message==="AUTH") throw e; }
+  }
+  return out;
+}
+function mergeList(oldList,newList){
+  const norm=k=>String(k??"").toLowerCase().replace(/\s/g,"");
+  const map=new Map((oldList||[]).map(i=>[norm(i.key),i]));
+  for(const item of newList){
+    const k=norm(item.key); if(!k) continue;
+    const ex=map.get(k);
+    if(ex){
+      const newer = !ex.email_date || (item.email_date && item.email_date>=ex.email_date);
+      map.set(k, newer ? {...ex,...item,resolved:ex.resolved} : ex);
+    } else map.set(k,{...item,resolved:false});
+  }
+  return [...map.values()];
+}
+async function runScan(){
+  if(!tokenValid()){ scanning=true; render(); requestToken(!load(LS.token)); return; }
+  scanning=true; message=null; render();
+  try{
+    const pkgMsgs = await fetchMessages("{zásilka balík balíček doručení vyzvednutí zasilkovna packeta PPL DPD GLS balíkovna alzabox delivery pickup shipment} newer_than:14d", 30);
+    const invMsgs = await fetchMessages("{faktura splatnost \"k úhradě\" upomínka vyúčtování \"výzva k platbě\" invoice \"payment due\"} newer_than:30d", 25);
+    const pkgs=[], invs=[];
+    const seen=new Set();
+    const handle=(msg,kind)=>{
+      if(seen.has(msg.id)) return; seen.add(msg.id);
+      const subject=header(msg,"Subject"), from=header(msg,"From");
+      const dateIso=new Date(+msg.internalDate).toISOString();
+      const body=extractBody(msg.payload);
+      if(kind==="pkg"){ const p=parsePackage(msg,subject,from,body,dateIso); if(p) pkgs.push(p); }
+      else { const i=parseInvoice(msg,subject,from,body,dateIso); if(i) invs.push(i); }
+    };
+    // sort oldest-first so the newest email wins the merge
+    pkgMsgs.sort((a,b)=>(+a.internalDate)-(+b.internalDate)).forEach(m=>handle(m,"pkg"));
+    invMsgs.sort((a,b)=>(+a.internalDate)-(+b.internalDate)).forEach(m=>handle(m,"inv"));
+    state={packages:mergeList(state.packages,pkgs), invoices:mergeList(state.invoices,invs), lastScan:new Date().toISOString()};
+    save(LS.data,state);
+    message={text:`Hotovo — nalezeno ${pkgs.length} zpráv o zásilkách a ${invs.length} o platbách.`,kind:"info"};
+  }catch(e){
+    if(e.message==="AUTH"){ requestToken(false); return; }
+    message={text:"Skenování selhalo: "+esc(e.message)+". Zkuste to znovu.",kind:"err"};
+  }
+  scanning=false; render();
+}
+
+/* ================= UI ================= */
+function toggleResolved(listName,key){
+  state[listName]=state[listName].map(i=>i.key===key?{...i,resolved:!i.resolved}:i);
+  save(LS.data,state); render();
+}
+function sortItems(items,f){
+  return [...items].sort((a,b)=>{
+    const da=daysUntil(a[f]),db=daysUntil(b[f]);
+    if(da===null&&db===null) return (b.email_date||"").localeCompare(a.email_date||"");
+    if(da===null) return 1; if(db===null) return -1; return da-db;
+  });
+}
+function factHtml(lbl,val,money){ return val?`<div class="fact"><span class="lbl">${esc(lbl)}</span><span class="val${money?" money":""}">${esc(val)}</span></div>`:""; }
+function cardHtml(i,kind){
+  const isPkg=kind==="pkg";
+  const d=dueInfo(isPkg?i.deadline:i.due_date);
+  return `<div class="card${i.resolved?" resolved":""}">
+    <div class="card-top"><div>
+      <span class="carrier ${isPkg?"pkg":"inv"}">${esc(isPkg?(i.carrier||"Zásilka"):(i.issuer||"Platba"))}</span>
+      <h3>${esc(isPkg?(i.shop||i.status||"Zásilka"):(i.subject||"Faktura"))}</h3>
+    </div>${d?`<span class="due ${d.cls}">⏳ ${esc(d.txt)}</span>`:""}</div>
+    <div class="facts">${isPkg
+      ? factHtml("Stav",i.status)+factHtml("Kde",i.pickup_place)+factHtml("K platbě",i.price,true)+factHtml("Číslo zásilky",i.tracking)
+      : factHtml("Částka",i.amount,true)+factHtml("Splatnost",i.due_date?fmtDate(i.due_date):null)+factHtml("Var. symbol",i.variable_symbol)+factHtml("Účet",i.account)}
+    </div>
+    ${i.note?`<div class="note">${esc(i.note)}</div>`:""}
+    <div class="card-actions"><button class="btn-done" onclick="toggleResolved('${isPkg?"packages":"invoices"}','${esc(i.key)}')">${i.resolved?"↩ Vrátit mezi aktivní":(isPkg?"✓ Vyzvednuto":"✓ Zaplaceno")}</button></div>
+  </div>`;
+}
+function setupHtml(){
+  return `<div class="setup">
+    <h2>První spuštění — propojení s Gmailem</h2>
+    <p>Aplikace čte vaše e-maily přímo z Gmailu přes oficiální Google API. Aby to Google dovolil, potřebuje aplikace vaše <b>Client ID</b> (vytvoříte si ho zdarma podle přiloženého návodu <code>NAVOD.md</code>, zabere to ~10 minut a dělá se jen jednou).</p>
+    <p>Vložte Client ID (končí na <code>.apps.googleusercontent.com</code>):</p>
+    <input id="cidInput" placeholder="např. 1234567890-abc123.apps.googleusercontent.com" autocomplete="off">
+    <button class="btn-scan" onclick="saveCid()">Uložit a pokračovat</button>
+    <p style="margin-top:12px;color:var(--muted);font-size:12.5px">Client ID není heslo — je to veřejný identifikátor vaší instance aplikace. Ukládá se jen do tohoto zařízení.</p>
+  </div>`;
+}
+function saveCid(){
+  const v=document.getElementById("cidInput").value.trim();
+  if(!v.endsWith(".apps.googleusercontent.com")){ alert("To nevypadá jako Client ID — mělo by končit na .apps.googleusercontent.com"); return; }
+  save(LS.clientId,v); render();
+}
+function render(){
+  const app=document.getElementById("app");
+  if(!getClientId()){ app.innerHTML=`<header><h1>Hlídač pošty<span class="dot">.</span></h1></header>`+setupHtml(); return; }
+
+  const pkgA=state.packages.filter(i=>!i.resolved), invA=state.invoices.filter(i=>!i.resolved);
+  const upcoming=[
+    ...pkgA.filter(i=>i.deadline).map(i=>({n:i.shop||i.carrier,d:i.deadline,k:"📦"})),
+    ...invA.filter(i=>i.due_date).map(i=>({n:i.issuer,d:i.due_date,k:"💳"})),
+  ].filter(i=>daysUntil(i.d)!==null).sort((a,b)=>daysUntil(a.d)-daysUntil(b.d)).slice(0,6);
+
+  const isPkg=tab==="pkg";
+  const active=isPkg?sortItems(pkgA,"deadline"):sortItems(invA,"due_date");
+  const resolved=(isPkg?state.packages:state.invoices).filter(i=>i.resolved);
+  const hasAny=(isPkg?state.packages:state.invoices).length>0;
+
+  app.innerHTML=`
+    <header>
+      <h1>Hlídač pošty<span class="dot">.</span></h1>
+      <div class="lastscan">${state.lastScan?"Naposledy: "+new Date(state.lastScan).toLocaleString("cs-CZ",{day:"numeric",month:"numeric",hour:"2-digit",minute:"2-digit"}):""}</div>
+    </header>
+    <div class="scanbar">
+      <button class="btn-scan" onclick="runScan()" ${scanning?"disabled":""}>${scanning?'<span class="spinner"></span> Prohledávám…':"📬 Prohledat e-maily"}</button>
+      <button class="btn-sec" onclick="signOut()">Odhlásit</button>
+    </div>
+    ${message?`<div class="msg ${message.kind==="info"?"info":""}">${message.text}</div>`:""}
+    <div class="strip">${upcoming.map(u=>{const d=dueInfo(u.d);return `<div class="chip ${d.chip}"><b>${u.k} ${esc(u.n)}</b><span class="when">${esc(d.chipTxt)}</span></div>`;}).join("")}</div>
+    <div class="tabs">
+      <button class="tab ${isPkg?"a-pkg":""}" onclick="tab='pkg';render()">📦 Balíčky <span class="count">${pkgA.length}</span></button>
+      <button class="tab ${!isPkg?"a-inv":""}" onclick="tab='inv';render()">💳 Faktury <span class="count">${invA.length}</span></button>
+    </div>
+    ${!hasAny
+      ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
+      : active.map(i=>cardHtml(i,tab)).join("")
+        + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
+    <footer>Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+}
+window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=saveCid; window.signOut=signOut; window.tab=tab;
+render();
+/* auto-scan on open if signed in and last scan older than 30 min */
+window.addEventListener("load",()=>{
+  setTimeout(()=>{
+    if(getClientId() && tokenValid() && (!state.lastScan || Date.now()-Date.parse(state.lastScan)>30*60000)) runScan();
+  },800);
+});
+</script>
+</body>
+</html>
