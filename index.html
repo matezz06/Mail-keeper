@@ -305,15 +305,32 @@ function parsePackage(msg, subject, from, body, dateIso){
     return item;
   }
 
+  if(f.includes("temu")){
+    item.carrier="Temu"; item.shop="Temu";
+    const num = (subject+" "+body.slice(0,800)).match(/\b(PO-\d{3}-\d{8,20}|[A-Z]{2}\d{9,15}[A-Z]{0,2})\b/);
+    if(num){ item.tracking=num[1]; item.key="temu"+num[1]; }
+    if(/byl doručen|byla doručena|jste (si )?vyzvedli|byl vyzvednut/i.test(subject)){ item.status="Doručeno / vyzvednuto"; item.picked=true; }
+    else if(/dorazil na místo vyzvednutí|připraven|čeká na vyzvednutí/i.test(subject+" "+body)){ item.status="Připraveno k vyzvednutí"; }
+    else item.status=subject;
+    const place = body.match(/(?:místo vyzvednutí|výdejn[íi]m? míst[ěeoa]+|na adrese)\s*[:\-]?\s*([^\n.]{5,90})/i);
+    if(place) item.pickup_place=place[1].trim();
+    const dl = body.match(/(?:do|nejpozději|před)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i);
+    if(dl) item.deadline=numDateToIso(dl[1]);
+    if(!item.key) item.key = "temu-"+(item.deadline || (msg.id||subject).slice(0,24));
+    return item;
+  }
+
   // generic shipping notification
   if(/(zásilk|balík|balíček|doručen|vyzvednut|delivery|shipment|package|track)/i.test(subject+f)){
     item.carrier="Zásilka"; item.shop=from.replace(/<.*/,"").replace(/["']/g,"").trim()||from; item.status=subject;
     const tn = subject.match(/\b([A-Z0-9]*\d[A-Z0-9]{6,18})\b/) || body.slice(0,400).match(/\b([A-Z]{0,3}\d{8,16})\b/);
-    if(tn){ item.tracking=tn[1]; item.key="gen-"+tn[1]; }
-    else item.key="gid-"+(msg.id||subject).slice(0,24);
-    if(/vyzvednuta|jste (si )?vyzvedli|byla doručena/i.test(subject)){ item.status="Vyzvednuto / doručeno"; item.picked=true; }
     const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i);
     if(dl) item.deadline=numDateToIso(dl[1]);
+    const domain = (f.match(/@([a-z0-9.\-]+)/)||[])[1]||"x";
+    if(tn){ item.tracking=tn[1]; item.key="gen-"+tn[1]; }
+    else if(item.deadline) item.key="g2-"+domain+"-"+item.deadline; // reminder emails about the same pickup share sender+deadline
+    else item.key="g2-"+domain+"-"+(msg.id||subject).slice(0,24);
+    if(/vyzvednuta|jste (si )?vyzvedli|byla doručena/i.test(subject)){ item.status="Vyzvednuto / doručeno"; item.picked=true; }
     return item;
   }
   return null;
@@ -375,7 +392,7 @@ function mergeList(oldList,newList){
 function prune(list){
   const now=Date.now();
   return (list||[])
-    .filter(i=>!/^gen(?!-)/.test(String(i.key||""))) // legacy "gen<id>" cards, superseded by tracking-keyed ones
+    .filter(i=>!/^gen(?!-)/.test(String(i.key||"")) && !/^gid-/.test(String(i.key||""))) // legacy per-email cards, superseded by merged ones
     .filter(i=>{
       if(!i.resolved) return true;
       if(!i.resolved_at){ i.resolved_at=new Date().toISOString(); return true; } // migrate old items
@@ -437,7 +454,7 @@ function cardHtml(i,kind){
       : factHtml("Částka",i.amount,true)+factHtml("Splatnost",i.due_date?fmtDate(i.due_date):null)+factHtml("Var. symbol",i.variable_symbol)+factHtml("Účet",i.account)}
     </div>
     ${i.note?`<div class="note">${esc(i.note)}</div>`:""}
-    <div class="card-actions"><button class="btn-done" onclick="toggleResolved('${isPkg?"packages":"invoices"}','${esc(i.key)}')">${i.resolved?"↩ Vrátit mezi aktivní":(isPkg?"✓ Vyzvednuto":"✓ Zaplaceno")}</button></div>
+    <div class="card-actions"><button class="btn-done" onclick="toggleResolved('${isPkg?"packages":"invoices"}','${esc(i.key)}')">${i.resolved?"↩ Vrátit mezi aktivní":(isPkg?"Označit vyzvednuté":"Označit zaplacené")}</button>${i.resolved?'<span style="margin-left:10px;font-size:13px;font-weight:600;color:var(--ok)">✓ Vyřízeno</span>':""}</div>
   </div>`;
 }
 function setupHtml(){
