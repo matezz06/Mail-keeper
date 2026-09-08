@@ -221,7 +221,7 @@ function cleanName(from){ return from.replace(/<.*/,"").replace(/["']/g,"").repl
    returning to sender, or a pickup confirmation (used to auto-resolve).
    "Order placed / preparing / on the way / marketing" are ignored on purpose. */
 const MARKETING = /(sleva|slevu|slevy|%\s*off|\d+\s*%|newsletter|akce|savings|deal|kup[oó]n|voucher|doporučujeme|inspirace)/i;
-const READY_RX = /(připraven[aoyé]?\s+(k|na|v)\s+(vyzvednutí|výdeji|odběru|výdejním|alzaboxu)|k vyzvednutí|vyzvedn[ěe]te si|čeká na v[áa]s|čeká na vyzvednutí|poslední (den|možnost)|ready for pickup|dorazil[ao]? (do|na)|přijďte si|stále čeká)/i;
+const READY_RX = /(připraven[aoyé]?\s+(k|na|v)\s+(vyzvednutí|výdeji|odběru|výdejním|alzaboxu)|k vyzvednutí|vyzvedn[ěe]te si|čeká na v[áa]s|na v[áa]s ček[áa]|čeká na vyzvednutí|už (je )?na (výdejním )?místě|na výdejním místě|poslední (den|možnost)|ready for pick.?up|arrived at the pick.?up|pick.?up location|dorazil[ao]? (do|na)|přijďte si|stále čeká)/i;
 const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byla doručena|byl doručen|díky za vyzvednutí|thank you for picking up)/i;
 
 function parsePackage(msg, subject, from, body, dateIso){
@@ -230,26 +230,28 @@ function parsePackage(msg, subject, from, body, dateIso){
   const item = {carrier:null, shop:null, status:null, pickup_place:null, deadline:null, price:null, tracking:null, code:null, note:null, key:null, email_date:dateIso};
   const emailDay = dateIso.slice(0,10);
 
-  /* ---- Zásilkovna format (any sender: zasilkovna.cz, allegromail.com "via Pošta Allegro", e-shops relaying it) ---- */
+  /* ---- Zásilkovna format (any sender relaying it: zasilkovna.cz, allegromail, Temu, e-shops) ---- */
   const zNum = body.match(/Z\s?\d{3}\s?\d{4}\s?\d{3}/);
-  if(zNum && (f.includes("zasilkovna")||f.includes("packeta")||/heslo pro vydání|výdejním místě|zásilkovna/i.test(body))){
+  if(zNum){
     item.carrier="Zásilkovna"; item.tracking=zNum[0]; item.key=zNum[0].replace(/\s/g,"");
     const shop = body.match(/od odes[ií]latele\s+(.{2,40}?)\s+(?:je|jsou|připraven)/i);
-    if(shop) item.shop=shop[1].trim();
+    if(shop) item.shop=shop[1].trim(); else if(f.includes("temu")) item.shop="Temu";
     if(PICKED_RX.test(subject)){ item.status="Vyzvednuto"; item.picked=true; return item; }
     if(/vrátit|vrácena odesílateli|vrací/i.test(subject)){ item.status="Nevyzvednuto — vrací se odesílateli"; return item; }
-    if(/připraven|poslední (den|možnost)|k výdeji|k odběru/i.test(subject+" "+body)){
-      item.status="Připraveno k vyzvednutí";
-      const place = body.match(/výdejním místě\s+(.{5,110}?)\.\s/); if(place) item.pickup_place=place[1].trim();
-      const heslo = body.match(/[Hh]eslo pro vydání zásilky je\s+([A-Z0-9]{4,8})/); if(heslo) item.code=heslo[1];
-      const dl = body.match(/nejpozději dne\s+(\d{1,2}\.?\s*[a-záéěíóúůýžščřď]+(?:\s*\d{4})?|\d{1,2}\.\s*\d{1,2}\.(?:\s*\d{4})?)/i);
-      if(dl) item.deadline = czDateToIso(dl[1]) || numDateToIso(dl[1]);
-      if(!item.deadline && /zítra je poslední/i.test(body)) item.deadline = addDays(emailDay,1);
-      if(!item.deadline && /dnes je poslední/i.test(body)) item.deadline = emailDay;
-      const dob = body.match(/[Dd]obírk[au][^0-9]{0,20}([\d\s]+[,.]?\d*)\s*(Kč|CZK)/); if(dob) item.price = dob[1].replace(/\s+/g," ").trim()+" Kč";
-      return item;
-    }
-    return null; // "převzali jsme zásilku" etc. — not actionable
+    const heslo = body.match(/[Hh]eslo pro vydání zásilky je\s+([A-Z0-9]{4,8})/);
+    const trustedSender = f.includes("zasilkovna")||f.includes("packeta")||f.includes("allegromail")||f.includes("temu");
+    const zReady = /je (pro v[áa]s )?připravena|připravena (na výdejním|k vyzvednutí|k výdeji|k odběru)|poslední (den|možnost)|arrived at the pick.?up|ready for pick.?up|pick.?up location/i.test(subject+" "+body);
+    // Real "ready" mails always carry the release password; e-shop "handed to carrier" mails never do.
+    if(!heslo && !(trustedSender && zReady)) return null;
+    item.status="Připraveno k vyzvednutí";
+    if(heslo) item.code=heslo[1];
+    const place = body.match(/výdejním místě\s+(.{5,110}?)\.\s/); if(place) item.pickup_place=place[1].trim();
+    const dl = body.match(/nejpozději dne\s+(\d{1,2}\.?\s*[a-záéěíóúůýžščřď]+(?:\s*\d{4})?|\d{1,2}\.\s*\d{1,2}\.(?:\s*\d{4})?)/i);
+    if(dl) item.deadline = czDateToIso(dl[1]) || numDateToIso(dl[1]);
+    if(!item.deadline && /zítra je poslední/i.test(body)) item.deadline = addDays(emailDay,1);
+    if(!item.deadline && /dnes je poslední/i.test(body)) item.deadline = emailDay;
+    const dob = body.match(/[Dd]obírk[au][^0-9]{0,20}([\d\s]+[,.]?\d*)\s*(Kč|CZK)/); if(dob) item.price = dob[1].replace(/\s+/g," ").trim()+" Kč";
+    return item;
   }
 
   /* ---- DPD ---- */
@@ -311,6 +313,25 @@ function parsePackage(msg, subject, from, body, dateIso){
       return item;
     }
     return null; // "Už to chystáme", "Děkujeme za objednávku", "Expedujeme" — not actionable
+  }
+
+  /* ---- BENU pharmacy pickup ---- */
+  if(f.includes("benu")){
+    item.carrier="BENU lékárna"; item.shop="BENU";
+    const num = (subject+" "+body).match(/(\d{9,12})/); if(num){item.tracking=num[1]; item.key="benu"+num[1];}
+    if(!item.key) return null;
+    if(PICKED_RX.test(subject)){ item.status="Vyzvednuto"; item.picked=true; return item; }
+    if(!/na v[áa]s ček[áa]|už (je )?na (výdejním )?místě|dorazila|na výdejním místě/i.test(subject+" "+body)) return null;
+    item.status="Připraveno k vyzvednutí v lékárně";
+    const place = body.match(/výdejním místě\s+(.{3,60}?)\s+s adresou\s+(.{5,60}?)\s*\./);
+    if(place) item.pickup_place=(place[1].trim()+" — "+place[2].trim()).replace(/\s+/g," ");
+    const days = body.match(/[Pp]održíme (?:Vám ji|ji)?\s*(\d{1,2})\s+kalendářních dn/);
+    if(days) item.deadline = addDays(emailDay, +days[1]);
+    const prods = extractProducts(subject, body, msg._html); if(prods.length) item.products=prods;
+    if(/[Pp]latba:?\s*(Hotově|na lékárně|na místě|kartou)/.test(body)){
+      const tot = body.match(/Celkem\s+([\d\s]+)\s?Kč/); if(tot) item.price = tot[1].replace(/\s+/g," ").trim()+" Kč (platba na místě)";
+    }
+    return item;
   }
 
   /* ---- Dr.Max pharmacy pickup ---- */
@@ -391,6 +412,7 @@ function parsePackage(msg, subject, from, body, dateIso){
   else item.key="g2-"+domain+"-"+(msg.id||subject).slice(0,24);
   const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code) item.code=code[1];
   const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
+  const prods = extractProducts(subject, body, msg._html); if(prods.length) item.products=prods;
   return item;
 }
 
@@ -415,7 +437,7 @@ function extractProducts(subject, text, html){
   if(html){ const re=/alza\.cz\/kod\/[^"']+["'][^>]*>\s*([^<]{3,140}?)\s*<\/a>/gi; let r; while((r=re.exec(html))) out.push(r[1]); }
   if(out.length) return simplifyProducts(out);
   const re2=/(.{3,90}?)\s+(\d{1,3})\s?(?:ks|x)\s+-?[\d\s]{1,10}(?:[,.]\d{2})?\s?(?:Kč|CZK)/g; let r2;
-  while((r2=re2.exec(text||""))){ out.push(r2[1].split(/Kč|CZK|\d{1,3}\s?(?:ks|x)\b/).pop().split(/[:.;|•]\s+/).pop()); }
+  while((r2=re2.exec(text||""))){ out.push(r2[1].split(/Kč|CZK|\d{1,3}\s?(?:ks|x)\b/).pop().split(/[:.;|•]\s+/).pop().split(/(?:Cena s DPH|s DPH|Počet|náz(?:vy|ev)\)?)\s*/i).pop()); }
   return simplifyProducts(out);
 }
 function productLine(i){
@@ -586,7 +608,7 @@ function cardHtml(i,kind){
   return `<div class="card${i.resolved?" resolved":""}">
     <div class="card-top"><div>
       <span class="carrier ${isPkg?"pkg":"inv"}">${esc(isPkg?(i.carrier||"Zásilka"):(i.issuer||"Platba"))}</span>
-      <h3>${esc(isPkg?(i.shop||i.status||"Zásilka"):(i.subject||"Faktura"))}</h3>
+      <h3>${esc(isPkg?(i.shop||i.carrier||"Zásilka"):(i.subject||"Faktura"))}</h3>
     </div>${d?`<span class="due ${d.cls}">⏳ ${esc(d.txt)}</span>`:""}</div>
     <div class="facts">${isPkg
       ? factHtml("Stav",i.status)+factHtml("Heslo / kód pro vydání",i.code,true)+factHtml("Kde",i.pickup_place)+factHtml("K platbě",i.price,true)+factHtml("Číslo zásilky",i.tracking)
@@ -650,6 +672,10 @@ function render(){
 }
 window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=saveCid; window.signOut=signOut; window.tab=tab;
 /* startup cleanup of stored data */
+if(!load("hp_migr_v5")){
+  state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
+  save("hp_migr_v5",1);
+}
 state.packages=prune(state.packages); state.invoices=prune(state.invoices); save(LS.data,state);
 render();
 /* auto-refresh: on open, and whenever the app returns from background */
@@ -658,11 +684,16 @@ function maybeAutoScan(minMinutes){
   const stale = !state.lastScan || Date.now()-Date.parse(state.lastScan) > minMinutes*60000;
   if(!stale) return;
   if(tokenValid()) runScan();
-  else if(load(LS.token)) requestToken(false); // silent re-auth; on success the callback starts the scan
+  else if(load(LS.token)){
+    requestToken(false); // silent re-auth; on success the callback starts the scan
+    setTimeout(()=>{ // iOS often blocks the silent flow without a tap — say so instead of doing nothing
+      if(!scanning && !tokenValid()){ message={text:"Přihlášení ke Googlu vypršelo — klepněte na „Prohledat e-maily“, obnoví se jedním klepnutím.",kind:"info"}; render(); }
+    },4000);
+  }
 }
-window.addEventListener("load",()=>setTimeout(()=>maybeAutoScan(10),800));
-document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") setTimeout(()=>maybeAutoScan(10),300); });
-window.addEventListener("pageshow",(e)=>{ if(e.persisted) setTimeout(()=>maybeAutoScan(10),300); });
+window.addEventListener("load",()=>setTimeout(()=>maybeAutoScan(5),800));
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") setTimeout(()=>maybeAutoScan(5),300); });
+window.addEventListener("pageshow",(e)=>{ if(e.persisted) setTimeout(()=>maybeAutoScan(5),300); });
 </script>
 </body>
 </html>
