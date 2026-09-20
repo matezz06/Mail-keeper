@@ -656,8 +656,10 @@ function render(){
     </header>
     <div class="scanbar">
       <button class="btn-scan" onclick="runScan()" ${scanning?"disabled":""}>${scanning?'<span class="spinner"></span> Prohledávám…':"📬 Prohledat e-maily"}</button>
+      <button class="btn-sec" onclick="toggleNotifPanel()">🔔 Notifikace</button>
       <button class="btn-sec" onclick="signOut()">Odhlásit</button>
     </div>
+    ${notifPanelOpen?renderNotifPanel():""}
     ${message?`<div class="msg ${message.kind==="info"?"info":""}">${message.text}</div>`:""}
     <div class="strip">${upcoming.map(u=>{const d=dueInfo(u.d);return `<div class="chip ${d.chip}"><b>${u.k} ${esc(u.n)}</b><span class="when">${esc(d.chipTxt)}</span></div>`;}).join("")}</div>
     <div class="tabs">
@@ -670,7 +672,65 @@ function render(){
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
     <footer>Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
-window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=saveCid; window.signOut=signOut; window.tab=tab;
+/* ================= push notifikace ================= */
+let notifPanelOpen=false;
+function toggleNotifPanel(){ notifPanelOpen=!notifPanelOpen; render(); }
+function getPushCfg(){ return load("hp_push_cfg")||{url:"",key:""}; }
+function idbSet(key,val){
+  return new Promise((res)=>{
+    const rq=indexedDB.open("hp-push",1);
+    rq.onupgradeneeded=()=>rq.result.createObjectStore("kv");
+    rq.onerror=()=>res(false);
+    rq.onsuccess=()=>{ try{ const tx=rq.result.transaction("kv","readwrite"); tx.objectStore("kv").put(val,key); tx.oncomplete=()=>res(true); tx.onerror=()=>res(false);}catch(e){res(false);} };
+  });
+}
+function urlB64ToU8(s){ s=s.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4) s+="="; const b=atob(s); return Uint8Array.from(b,c=>c.charCodeAt(0)); }
+function renderNotifPanel(){
+  const cfg=getPushCfg();
+  const st = notifStatus();
+  return `<div class="setup" style="margin-bottom:16px">
+    <h2>🔔 Push notifikace (7:00 a 16:00)</h2>
+    <p style="font-size:13px;color:var(--muted)">Vyžaduje vlastní notifikační server podle návodu <code>notifikace-server/NAVOD-NOTIFIKACE.md</code>. Funguje jen v aplikaci přidané na plochu (iOS 16.4+).</p>
+    <p style="margin-top:8px">Adresa serveru (Worker URL):</p>
+    <input id="pushUrl" placeholder="https://hlidac-posty.uzivatel.workers.dev" value="${esc(cfg.url)}" autocomplete="off">
+    <p>Klíč (APP_KEY ze serveru):</p>
+    <input id="pushKey" placeholder="dlouhý tajný klíč" value="${esc(cfg.key)}" autocomplete="off">
+    <button class="btn-scan" onclick="enablePush()">Aktivovat na tomto zařízení</button>
+    <span style="display:block;margin-top:10px;font-size:13px;color:var(--muted)">${st}</span>
+  </div>`;
+}
+function notifStatus(){
+  if(!("serviceWorker" in navigator)||!("PushManager" in window)) return "❌ Tento prohlížeč push notifikace nepodporuje. Na iPhonu otevřete aplikaci z ikony na ploše.";
+  if(Notification.permission==="granted" && load("hp_push_active")) return "✅ Notifikace jsou na tomto zařízení aktivní.";
+  if(Notification.permission==="denied") return "❌ Notifikace jsou v systému zakázané — povolte je v Nastavení → Hlídač pošty → Oznámení.";
+  return "Notifikace zatím nejsou aktivované.";
+}
+async function enablePush(){
+  const url=(document.getElementById("pushUrl").value||"").trim().replace(/\/$/,"");
+  const key=(document.getElementById("pushKey").value||"").trim();
+  if(!url.startsWith("https://")||!key){ alert("Vyplňte adresu serveru (https://…) i klíč."); return; }
+  save("hp_push_cfg",{url,key});
+  try{
+    const reg=await navigator.serviceWorker.register("sw.js");
+    await navigator.serviceWorker.ready;
+    const perm=await Notification.requestPermission();
+    if(perm!=="granted"){ message={text:"Notifikace nebyly povoleny.",kind:"err"}; render(); return; }
+    const vr=await fetch(url+"/vapid"); const {key:vapid}=await vr.json();
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlB64ToU8(vapid)});
+    const r=await fetch(url+"/subscribe?k="+encodeURIComponent(key),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+    if(!r.ok) throw new Error(r.status===401?"Nesprávný klíč (APP_KEY).":"Server odpověděl "+r.status);
+    await idbSet("cfg",{url,key});
+    save("hp_push_active",1);
+    message={text:"✅ Hotovo — notifikace budou chodit v 7:00 a odpoledne v 16:00, když bude co hlásit.",kind:"info"};
+  }catch(e){
+    message={text:"Aktivace notifikací selhala: "+esc(e.message),kind:"err"};
+  }
+  notifPanelOpen=false; render();
+}
+if("serviceWorker" in navigator){ try{ navigator.serviceWorker.register("sw.js"); }catch(e){} }
+
+window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=saveCid; window.signOut=signOut; window.tab=tab; window.toggleNotifPanel=toggleNotifPanel; window.enablePush=enablePush;
 /* startup cleanup of stored data */
 if(!load("hp_migr_v5")){
   state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
