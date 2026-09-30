@@ -398,9 +398,18 @@ function parsePackage(msg, subject, from, body, dateIso){
 
   /* ---- generic: unknown sender, must be clearly actionable ---- */
   if(MARKETING.test(subject)) return null;
+  // insurance / banks / utilities / telco never deliver parcels
+  if(/pojist|assistance|allianz|generali|kooperativa|uniqa|axa|direct\.|csob|čsob|moneta|airbank|raiffeisen|komerční|banka|vodafone|o2\s|t-mobile|innogy|energie|čez/i.test(f)) return null;
+  // order confirmations are never pickup-ready mails (but stay useful as a product source later)
+  if(/potvrzen[íi] objednávky|potvrzujeme (vaši |tvoji )?objednávku|order confirmation|děkujeme za (vaši |tvou )?objednávk|objednávku jsme přijali/i.test(subject)) return null;
   const picked = PICKED_RX.test(subject);
   if(!picked && !READY_RX.test(subject+" "+body.slice(0,1500))) return null;
   if(/čeká na přepravu|předán[ao]? dopravci|na cestě|expedov|odeslán[ao]?\b|byla odeslána/i.test(subject) && !READY_RX.test(subject)) return null;
+  // future tense ("jakmile bude…") = not ready yet, unless the mail carries hard evidence
+  if(!picked && /jakmile bude|budeme v[áa]s informovat|dáme v[áa]m vědět|kontaktuje v[áa]s dopravce|až bude připraven/i.test(body.slice(0,1500))
+     && !/(heslo|kód) pro (vydání|vyzvednutí|otevření)|je (pro v[áa]s )?připravena? k vyzvednutí|si můžete vyzvednout/i.test(body)) return null;
+  // must actually talk about a shipment
+  if(!picked && !/zásilk|balí[kč]|kurýr|doručen|výdejn|box|pick.?up/i.test(subject+" "+body.slice(0,1500))) return null;
   item.carrier="Zásilka"; item.shop=cleanName(from)||from;
   item.status = picked ? "Vyzvednuto / doručeno" : "Připraveno k vyzvednutí";
   if(picked) item.picked=true;
@@ -410,7 +419,7 @@ function parsePackage(msg, subject, from, body, dateIso){
   if(tn){ item.tracking=tn[1]; item.key="gen-"+tn[1]; }
   else if(item.deadline) item.key="g2-"+domain+"-"+item.deadline;
   else item.key="g2-"+domain+"-"+(msg.id||subject).slice(0,24);
-  const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code) item.code=code[1];
+  const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code && /\d/.test(code[1])) item.code=code[1];
   const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
   const prods = extractProducts(subject, body, msg._html); if(prods.length) item.products=prods;
   return item;
@@ -464,13 +473,17 @@ async function enrichProducts(onProgress){
           if(found.length) break;
         }
       }
-      // Allegro relays via Zásilkovna without the Z number in shop emails: match by date instead
-      if(!found.length && /allegro/i.test(it.shop||"") && it.email_date){
-        const ids=await listIds("from:allegro.cz produkt newer_than:30d",6);
-        for(const id of ids){
-          const msg=await gmail("messages/"+id,{format:"metadata",metadataHeaders:"Subject"});
-          const d=+msg.internalDate, t=Date.parse(it.email_date);
-          if(d<=t && t-d<8*86400000){ found=extractProducts(header(msg,"Subject"),"",""); if(found.length) break; }
+      // Allegro/Temu/WeDo relays: shop mails don't carry the tracking number — match purchases by date instead
+      if(!found.length && /allegro|temu|wedo/i.test((it.shop||"")+" "+(it.carrier||"")) && it.email_date){
+        const t=Date.parse(it.email_date);
+        const q='{from:allegromail.com from:allegro.cz from:allegro.com from:temu.com from:temu "následující produkt" "Koupil a zaplatil jste"} newer_than:60d';
+        for(const id of await listIds(q,10)){
+          const msg=await gmail("messages/"+id,{format:"full"});
+          const d=+msg.internalDate;
+          if(!(d<=t+864e5 && t-d<14*86400000)) continue; // purchase up to 14 days before the pickup mail
+          const {text,html}=extractBody(msg.payload);
+          found=extractProducts(header(msg,"Subject"),text,html);
+          if(found.length) break;
         }
       }
     }catch(e){ if(e.message==="AUTH") throw e; }
@@ -735,6 +748,12 @@ window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=sav
 if(!load("hp_migr_v5")){
   state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
   save("hp_migr_v5",1);
+}
+if(!load("hp_migr_v6")){
+  // drop stored generic cards created before the stricter rules (insurance mails, order confirmations);
+  // genuinely ready ones re-appear on the next scan
+  state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilka" && !i.resolved));
+  save("hp_migr_v6",1);
 }
 state.packages=prune(state.packages); state.invoices=prune(state.invoices); save(LS.data,state);
 render();
