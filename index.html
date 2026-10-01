@@ -435,14 +435,17 @@ const SENDER_BLACKLIST_RX = /pojist|assistance|allianz|generali|kooperativa|uniq
 function extractIds(subject, body){
   const t = (subject+" "+body.slice(0,4000));
   const ids = new Set();
-  for(const m of t.matchAll(/\bZ\s?\d{3}\s?\d{4}\s?\d{3}\b/g)) ids.add(m[0].replace(/\s/g,""));
-  for(const m of t.matchAll(/\b(?=[A-Z0-9]{8,18}\b)(?=[A-Z0-9]*\d)[A-Z0-9]{8,18}\b/g)){
-    const v=m[0];
-    if(/^\d{1,2}20\d{6}$/.test(v)) continue;            // dd.mm.yyyy fragments
-    if(/^(420|00420)\d+$/.test(v)) continue;             // phone numbers
+  for(const m of t.matchAll(/\bZ\s?\d{3}\s?\d{4}\s?\d{3}\b/g)){
+    const digits=m[0].replace(/[^\d]/g,"");
+    ids.add("Z"+digits); ids.add(digits);               // link "Z 442 2131 684" with plain "4422131684"
+  }
+  /* bare ids count only right after a shipment/order word — footer noise (IČO, DIČ, phones) has other labels */
+  for(const m of t.matchAll(/(?:č[íi]slo (?:z[áa]silky|objedn[áa]vky|balí[kč]ku)|z[áa]silk[auy]?|objedn[áa]vk[auy]?|balí[kč]ek|track(?:ing)?(?: number)?|referenčn[íi] č[íi]slo|shipment)\s*(?:č\.?|číslo)?\s*[:\-]?\s*((?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,18})\b/gi)){
+    const v=m[1].toUpperCase();
+    if(/^(420|00420)\d+$/.test(v)) continue;            // phone numbers
     ids.add(v);
   }
-  return [...ids].slice(0,8);
+  return [...ids].slice(0,10);
 }
 function shopFromText(body){
   let m;
@@ -469,7 +472,9 @@ function parsePackage(msg, subject, from, body, dateIso){
     if(shopHint) item.shop = shopHint;
     if(!item.picked){
       if(ORDER_CONFIRM_RX.test(subject)){ item.purchase = true; }
-      else if(future && !strong && !item.deadline){
+      else if(!item.deadline && (
+          /vyčkejte|nenavštěvujte|čeká na předání|předán[ao]? dopravci|nachystaná? a čeká|převzali jsme (vaši )?zásilku/i.test(head) ||
+          (future && !strong))){
         item.transit = true; item.status = "Na cestě";
         item.code = null; item.deadline = null;            // nothing actionable yet
       }
@@ -682,8 +687,8 @@ async function runScan(){
   scanning=true; message=null; render();
   try{
     const pkgMsgs = await fetchMessages([
-      {query:"{připravena připraveno \"k vyzvednutí\" vyzvednutí vyzvedněte \"k výdeji\" \"k odběru\" AlzaBoxu \"čeká na vás\" \"poslední den\" uložení vyzvednuta doručena doručeno} newer_than:14d", max:80},
-      {query:"{zasilkovna packeta dpd ppl gls balikovna wedo allegromail temu drmax \"česká pošta\" balík zásilka kurýr} newer_than:14d", max:60},
+      {query:"{připravena připraveno \"k vyzvednutí\" vyzvednutí vyzvedněte \"k výdeji\" \"k odběru\" AlzaBoxu \"čeká na vás\" \"poslední den\" uložení vyzvednuta doručena doručeno} newer_than:30d", max:80},
+      {query:"{zasilkovna packeta dpd ppl gls balikovna wedo allegromail temu drmax \"česká pošta\" balík zásilka kurýr} newer_than:30d", max:60},
       {query:"{\"předali jsme\" \"předáno dopravci\" \"převzali jsme\" \"na cestě\" \"odeslali\" \"potvrzení objednávky\" \"potvrzujeme vaši objednávku\"} newer_than:21d", max:50},
     ], 170);
     const invMsgs = await fetchMessages([
@@ -862,6 +867,11 @@ window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=sav
 if(!load("hp_migr_v5")){
   state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
   save("hp_migr_v5",1);
+}
+if(!load("hp_migr_v8")){
+  // v1.2.1: přesnější propojování čísel — otevřené karty se přestaví ještě jednou načisto
+  state.packages=(state.packages||[]).filter(i=>i.resolved);
+  save("hp_migr_v8",1);
 }
 if(!load("hp_migr_v7")){
   // v1.2: cards are now built per shipment (one card from several linked emails) — rebuild the open ones
