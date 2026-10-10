@@ -223,7 +223,7 @@ function cleanName(from){ return from.replace(/<.*/,"").replace(/["']/g,"").repl
    "Order placed / preparing / on the way / marketing" are ignored on purpose. */
 const MARKETING = /(sleva|slevu|slevy|%\s*off|\d+\s*%|newsletter|akce|savings|deal|kup[oó]n|voucher|doporučujeme|inspirace)/i;
 const READY_RX = /(připraven[aoyé]?\s+(k|na|v)\s+(vyzvednutí|výdeji|odběru|výdejním|alzaboxu)|k vyzvednutí|vyzvedn[ěe]te si|čeká na v[áa]s|na v[áa]s ček[áa]|čeká na vyzvednutí|už (je )?na (výdejním )?místě|na výdejním místě|poslední (den|možnost)|ready for pick.?up|arrived at the pick.?up|pick.?up location|dorazil[ao]? (do|na)|přijďte si|stále čeká)/i;
-const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byla doručena|byl doručen|díky za vyzvednutí|thank you for picking up)/i;
+const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byl[ao]? doručen[ao]?\b(?!\s+(na|do)\s+(výdejn|boxu|alzabox|odběr|pobočk|míst))|díky za vyzvednutí|thank you for picking up)/i;
 
 function parsePackageCore(msg, subject, from, body, dateIso){
   const f = from.toLowerCase();
@@ -426,6 +426,21 @@ function parsePackageCore(msg, subject, from, body, dateIso){
   return item;
 }
 
+/* ============ trvalá evidence vyzvednutého / zaplaceného ============ */
+const DONE_KEY="hp_done_v1";
+let doneReg = load(DONE_KEY)||{};
+(function(){ const now=Date.now(); let ch=false;
+  for(const k in doneReg){ if(now-Date.parse(doneReg[k])>90*86400000){ delete doneReg[k]; ch=true; } }
+  if(ch) save(DONE_KEY,doneReg); })();
+const normId = k => String(k||"").toLowerCase().replace(/\s/g,"");
+function regKeys(i){ return [normId(i.key), ...((i.ids||[]).map(normId))].filter(Boolean); }
+function regHit(i){ for(const k of regKeys(i)){ if(doneReg[k]) return doneReg[k]; } return null; }
+function regMark(i,on){
+  const t=new Date().toISOString();
+  for(const k of regKeys(i)){ if(on) doneReg[k]=t; else delete doneReg[k]; }
+  save(DONE_KEY,doneReg);
+}
+
 /* ============ shipment story: link related emails, decide state from the whole thread ============ */
 const FUTURE_RX = /(vyčkejte|jakmile bude|bude (v[áa]m )?doručena|nenavštěvujte|čeká na předání|předán[ao]? dopravci|předáno dopravci|převzali jsme (vaši )?zásilku|nachystaná? a čeká|na cestě|odeslali (jsme )?(vaši|tvou)?\s?objednávku|expedov|budeme v[áa]s informovat|dáme v[áa]m vědět|kontaktuje v[áa]s dopravce|až bude připraven)/i;
 const STRONG_READY_RX = /((heslo|kód) (pro )?(vydání|vyzvednutí|otevření)|můžete (si )?(kdykoliv )?vyzvednout|je (pro v[áa]s )?připraven[ao]? (k vyzvednutí|k odběru|k výdeji|na výdejním|v alzaboxu)|už na v[áa]s ček[áa]|podržíme v[áa]m|přijďte si|arrived at the pick.?up|ready for pick.?up|poslední (den|možnost)|dorazil[ao]? (do|na)\b)/i;
@@ -460,6 +475,10 @@ function cleanShop(s){
 /* wrapper: classify each mail as an event in a shipment's story */
 function parsePackage(msg, subject, from, body, dateIso){
   const f = from.toLowerCase();
+  if(/allegro/.test(f) && /koupil a zaplatil jste|následující produkt/i.test(subject+" "+body.slice(0,400))){
+    const prods=extractProducts(subject, body, msg._html);
+    if(prods.length) return {allegroBuy:true, products:prods, email_date:dateIso, ids:[], key:"abuy-"+(msg.id||"").slice(0,24)};
+  }
   if(SENDER_BLACKLIST_RX.test(f) || MARKETING.test(subject)) return parsePackageCore(msg, subject, from, body, dateIso);
   const ids = extractIds(subject, body);
   const shopHint = cleanShop(shopFromText(body));
@@ -508,6 +527,7 @@ function assembleShipments(parsed){
   const merged=new Map();
   parsed.forEach((p,idx)=>{ const r=find(idx); if(!merged.has(r)) merged.set(r,[]); merged.get(r).push(p); });
   const out=[];
+  const buys = parsed.filter(p=>p&&p.allegroBuy).sort((a,b)=>String(a.email_date).localeCompare(String(b.email_date)));
   for(const items of merged.values()){
     items.sort((a,b)=>String(a.email_date||"").localeCompare(String(b.email_date||"")));
     const ready  = items.filter(i=>!i.purchase && !i.transit && !i.picked && i.status);
@@ -536,6 +556,17 @@ function assembleShipments(parsed){
       if(i.price && !card.price) card.price=i.price;
     }
     delete card.purchase; delete card.background;
+    /* obsah u Allegro/WeDo/OneBox: nákupní e-mail nenese číslo zásilky — odhad podle data nákupu */
+    if(!(card.products||[]).length && /allegro|wedo|onebox/i.test((card.carrier||"")+" "+(card.shop||"")) && card.email_date){
+      const t=Date.parse(card.email_date);
+      let best=null;
+      for(const b of buys){ const d=Date.parse(b.email_date); if(d<=t+86400000 && t-d<14*86400000) best=b; }
+      if(best){ card.products=best.products; card.products_estimated=true; }
+    }
+    /* jednou odkliknuto = navždy vyřízeno (i když se karta po aktualizaci postaví znovu) */
+    const done=regHit(card);
+    if(card.picked){ regMark(card,true); }
+    else if(done){ card.resolved=true; card.resolved_at=done; }
     out.push(card);
   }
   return out;
@@ -568,7 +599,8 @@ function extractProducts(subject, text, html){
 function productLine(i){
   if(i.products===undefined) return null;
   if(!i.products.length) return "Zásilka: nedohledáno";
-  const p=i.products; return "Zásilka: "+p.slice(0,3).join(", ")+(p.length>3?` +${p.length-3} další`:"");
+  const p=i.products;
+  return (i.products_estimated?"Zásilka (odhad dle data nákupu): ":"Zásilka: ")+p.slice(0,3).join(", ")+(p.length>3?` +${p.length-3} další`:"");
 }
 /* look up product names in older emails by tracking / order number */
 async function enrichProducts(onProgress){
@@ -712,7 +744,7 @@ async function runScan(){
     save(LS.data,state);
     message={text:"Dohledávám obsah zásilek…",kind:"info"}; render();
     await enrichProducts((k,total)=>{ message={text:`Dohledávám obsah zásilek… (${k}/${total})`,kind:"info"}; render(); });
-    message={text:`Hotovo — nalezeno ${pkgs.length} zpráv o zásilkách a ${invs.length} o platbách.`,kind:"info"};
+    message=null;
   }catch(e){
     if(e.message==="AUTH"){ requestToken(false); return; }
     message={text:"Skenování selhalo: "+esc(e.message)+". Zkuste to znovu.",kind:"err"};
@@ -722,7 +754,12 @@ async function runScan(){
 
 /* ================= UI ================= */
 function toggleResolved(listName,key){
-  state[listName]=state[listName].map(i=>i.key===key?{...i,resolved:!i.resolved,resolved_at:!i.resolved?new Date().toISOString():undefined}:i);
+  state[listName]=state[listName].map(i=>{
+    if(i.key!==key) return i;
+    const on=!i.resolved;
+    regMark(i,on);
+    return {...i,resolved:on,resolved_at:on?new Date().toISOString():undefined};
+  });
   save(LS.data,state); render();
 }
 function sortItems(items,f){
@@ -771,10 +808,6 @@ function render(){
   if(!getClientId()){ app.innerHTML=`<header><h1>Hlídač pošty<span class="dot">.</span></h1></header>`+setupHtml(); return; }
 
   const pkgA=state.packages.filter(i=>!i.resolved), invA=state.invoices.filter(i=>!i.resolved);
-  const upcoming=[
-    ...pkgA.filter(i=>i.deadline).map(i=>({n:i.shop||i.carrier,d:i.deadline,k:"📦"})),
-    ...invA.filter(i=>i.due_date).map(i=>({n:i.issuer,d:i.due_date,k:"💳"})),
-  ].filter(i=>daysUntil(i.d)!==null).sort((a,b)=>daysUntil(a.d)-daysUntil(b.d)).slice(0,6);
 
   const isPkg=tab==="pkg";
   const active=isPkg?sortItems(pkgA,"deadline"):sortItems(invA,"due_date");
@@ -793,7 +826,6 @@ function render(){
     </div>
     ${notifPanelOpen?renderNotifPanel():""}
     ${message?`<div class="msg ${message.kind==="info"?"info":""}">${message.text}</div>`:""}
-    <div class="strip">${upcoming.map(u=>{const d=dueInfo(u.d);return `<div class="chip ${d.chip}"><b>${u.k} ${esc(u.n)}</b><span class="when">${esc(d.chipTxt)}</span></div>`;}).join("")}</div>
     <div class="tabs">
       <button class="tab ${isPkg?"a-pkg":""}" onclick="tab='pkg';render()">📦 Balíčky <span class="count">${pkgA.length}</span></button>
       <button class="tab ${!isPkg?"a-inv":""}" onclick="tab='inv';render()">💳 Faktury <span class="count">${invA.length}</span></button>
@@ -802,7 +834,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.3 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
@@ -867,6 +899,12 @@ window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=sav
 if(!load("hp_migr_v5")){
   state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
   save("hp_migr_v5",1);
+}
+if(!load("hp_migr_v9")){
+  // v1.3: zapsat dřívější odkliky do trvalého registru a přestavět otevřené karty
+  for(const i of (state.packages||[]).concat(state.invoices||[])){ if(i.resolved) regMark(i,true); }
+  state.packages=(state.packages||[]).filter(i=>i.resolved);
+  save("hp_migr_v9",1);
 }
 if(!load("hp_migr_v8")){
   // v1.2.1: přesnější propojování čísel — otevřené karty se přestaví ještě jednou načisto
