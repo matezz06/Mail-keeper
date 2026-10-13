@@ -205,7 +205,10 @@ function extractBody(payload){
   walk(payload);
   const htmlText = html
     .replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<script[\s\S]*?<\/script>/gi," ")
-    .replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+    .replace(/<[^>]+>/g," ")
+    .replace(/&#x([0-9a-fA-F]+);/g,(m,h)=>{try{return String.fromCodePoint(parseInt(h,16));}catch(e){return " ";}})
+    .replace(/&#(\d+);/g,(m,d)=>{try{return String.fromCodePoint(+d);}catch(e){return " ";}})
+    .replace(/&nbsp;/g," ").replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&")
     .replace(/\s+/g," ");
   // read BOTH parts: some senders (e.g. Alza) put deadline/code only in the HTML version
   return {text:(plain.replace(/\s+/g," ")+" ::: "+htmlText).trim(), html};
@@ -379,7 +382,8 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     else return null;
     const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
     const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*(\d{4,8})\b/i); if(code) item.code=code[1];
-    const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu|Balíkovn[aě])\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
+    const nm = body.match(/Název:\s*(.{3,70}?)\s*(?:Adresa|Mapa|Otev[íi]rac|$)/);
+    const place = nm || body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu|Balíkovn[aě])\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
     return item;
   }
 
@@ -466,6 +470,7 @@ function shopFromText(body){
   let m;
   if((m=body.match(/internetový obchod\s+([^\s].{1,45}?)\s+n[áa]m předal/i))) return m[1].trim();
   if((m=body.match(/zásilka od\s+([A-ZÁ-Ž0-9][^\n]{1,45}?)\s+je\s+připraven/i))) return m[1].trim();
+  if((m=body.match(/Odes[íi]latel:?\s+(.{2,50}?)\s+(?:Č[íi]slo|PIN|Váha|Adresa|$)/i))) return m[1].trim();
   return null;
 }
 function cleanShop(s){
@@ -707,7 +712,7 @@ function prune(list){
   const now=Date.now();
   return (list||[])
     .filter(i=>!/^gen(?!-)/.test(String(i.key||"")) && !/^gid-/.test(String(i.key||""))) // legacy per-email cards, superseded by merged ones
-    .filter(i=>!(i.status && /(čeká na přepravu|na cestě|chystáme|expedov|zpracovává|savings|%|sleva|na vás stále čeká$)/i.test(i.status) && !i.resolved && !/^(Připraveno|Kurýr|Nevyzvednuto)/.test(i.status))) // stale non-actionable cards from older versions
+    .filter(i=>!(!i.transit && i.status && /(čeká na přepravu|na cestě|chystáme|expedov|zpracovává|savings|%|sleva|na vás stále čeká$)/i.test(i.status) && !i.resolved && !/^(Připraveno|Kurýr|Nevyzvednuto)/.test(i.status))) // stale non-actionable cards from older versions
     .filter(i=>{
       if(!i.resolved) return true;
       if(!i.resolved_at){ i.resolved_at=new Date().toISOString(); return true; } // migrate old items
@@ -834,7 +839,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.3 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.3.2 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
