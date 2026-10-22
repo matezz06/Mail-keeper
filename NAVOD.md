@@ -54,6 +54,7 @@ Od té chvíle se chová jako běžná aplikace.
 
 ---
 
+
 ### Dobré vědět
 
 - **Aktualizace dat:** aplikace se sama znovu prohledá při každém otevření (pokud je poslední sken
