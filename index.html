@@ -10,7 +10,6 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Hlídač pošty">
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --bg:#F3F5F2; --card:#FFF; --ink:#17211B; --muted:#5F6E64; --line:#DFE5DE;
@@ -76,6 +75,7 @@
   .setup code{background:var(--bg);padding:1px 6px;border-radius:5px;font-size:12.5px}
   a{color:var(--pkg)}
 .card.transit{opacity:.62}
+.lastscan.old{color:#c0392b;font-weight:700}
 </style>
 </head>
 <body>
@@ -89,13 +89,10 @@ const LS = {
   token: "hp_token",           // {access_token, expires_at}
   data: "hp_data_v1",          // {packages:[], invoices:[], lastScan}
 };
-const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 let state = load(LS.data) || { packages: [], invoices: [], lastScan: null };
 let tab = "pkg";
 let scanning = false;
 let message = null; // {text, kind}
-let tokenClient = null;
-let authInteractive = false;
 
 function load(k){ try{ const v = localStorage.getItem(k); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
@@ -147,50 +144,27 @@ function dueInfo(dateStr){
 }
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
-/* ================= Google auth ================= */
-function getClientId(){ return load(LS.clientId); }
-function tokenValid(){
-  const t = load(LS.token);
-  return t && t.access_token && t.expires_at && Date.now() < t.expires_at - 60000 ? t.access_token : null;
-}
-function initTokenClient(){
-  if(tokenClient || !window.google) return;
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: getClientId(),
-    scope: SCOPE,
-    callback: (resp)=>{
-      if(resp && resp.access_token){
-        save(LS.token, {access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in||3600)*1000});
-        runScan();
-      }else{
-        scanning=false; message={text:"Přihlášení ke Googlu se nepovedlo. Zkuste to znovu.",kind:"err"}; render();
-      }
-    },
-    error_callback: ()=>{ scanning=false; if(authInteractive){ message={text:"Přihlášení bylo zrušeno.",kind:"err"}; } render(); }
-  });
-}
-function requestToken(interactive){
-  initTokenClient();
-  if(!tokenClient){ if(interactive){ message={text:"Google přihlášení se ještě načítá — zkuste to za pár sekund.",kind:"err"}; render(); } return; }
-  authInteractive = !!interactive;
-  tokenClient.requestAccessToken({prompt: interactive ? "consent" : ""});
-}
-function signOut(){
-  localStorage.removeItem(LS.token);
-  message={text:"Odhlášeno. Data zůstala uložená v telefonu.",kind:"info"}; render();
+function editServer(){
+  localStorage.removeItem("hp_push_cfg_lock"); // no-op, kept for symmetry
+  const cfg=getPushCfg(); save("hp_push_cfg_backup",cfg);
+  localStorage.removeItem("hp_push_cfg");
+  message=null; render(); // ukáže úvodní obrazovku s předvyplněnými hodnotami ze zálohy
 }
 
-/* ================= Gmail fetch ================= */
+/* ================= Gmail fetch (přes vlastní server — v1.4) ================= */
 async function gmail(path, params){
-  const token = tokenValid();
-  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/"+path);
+  const cfg = getPushCfg();
+  if(!cfg.url || !cfg.key) throw new Error("SETUP");
+  const url = new URL(cfg.url.replace(/\/+$/,"")+"/gmail/"+path);
   for(const [k,v] of Object.entries(params||{})){
     if(Array.isArray(v)) v.forEach(x=>url.searchParams.append(k,x));
     else if(v!=null) url.searchParams.set(k,v);
   }
-  const r = await fetch(url, {headers:{Authorization:"Bearer "+token}});
-  if(r.status===401){ localStorage.removeItem(LS.token); throw new Error("AUTH"); }
-  if(!r.ok) throw new Error("Gmail API: "+r.status);
+  url.searchParams.set("k", cfg.key);
+  const r = await fetch(url);
+  if(r.status===401) throw new Error("KEY");
+  if(r.status===502) throw new Error("SRV_GMAIL");
+  if(!r.ok) throw new Error("Server: "+r.status);
   return r.json();
 }
 function b64(s){ return decodeURIComponent(escape(atob(s.replace(/-/g,"+").replace(/_/g,"/")))); }
@@ -226,7 +200,7 @@ function cleanName(from){ return from.replace(/<.*/,"").replace(/["']/g,"").repl
    "Order placed / preparing / on the way / marketing" are ignored on purpose. */
 const MARKETING = /(sleva|slevu|slevy|%\s*off|\d+\s*%|newsletter|akce|savings|deal|kup[oó]n|voucher|doporučujeme|inspirace)/i;
 const READY_RX = /(připraven[aoyé]?\s+(k|na|v)\s+(vyzvednutí|výdeji|odběru|výdejním|alzaboxu)|k vyzvednutí|vyzvedn[ěe]te si|čeká na v[áa]s|na v[áa]s ček[áa]|čeká na vyzvednutí|už (je )?na (výdejním )?místě|na výdejním místě|poslední (den|možnost)|ready for pick.?up|arrived at the pick.?up|pick.?up location|dorazil[ao]? (do|na)|přijďte si|stále čeká)/i;
-const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byl[ao]? doručen[ao]?\b(?!\s+(na|do)\s+(výdejn|boxu|alzabox|odběr|pobočk|míst))|díky za vyzvednutí|thank you for picking up)/i;
+const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byl[ao]? doručen[ao]?\b(?!\s+(na|do)\s+(výdejn|boxu|alzabox|odběr|pobočk|míst))|díky za vyzvednutí|thank you for picking up|potvrzen[íi] o převzetí bal[íi]ku|je bal[íi]k ve [Vv]ašich rukou)/i;
 
 function parsePackageCore(msg, subject, from, body, dateIso){
   const f = from.toLowerCase();
@@ -254,6 +228,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     if(dl) item.deadline = czDateToIso(dl[1]) || numDateToIso(dl[1]);
     if(!item.deadline && /zítra je poslední/i.test(body)) item.deadline = addDays(emailDay,1);
     if(!item.deadline && /dnes je poslední/i.test(body)) item.deadline = emailDay;
+    if(!item.deadline){ const dl2=body.match(/(?:vyzvednut[íi]\s+do|vyzvedn[ěe]te[^.]{0,40}?do|nejpozději(?:\s+však)?\s+do)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl2) item.deadline=numDateToIso(dl2[1]); }
     const dob = body.match(/[Dd]obírk[au][^0-9]{0,20}([\d\s]+[,.]?\d*)\s*(Kč|CZK)/); if(dob) item.price = dob[1].replace(/\s+/g," ").trim()+" Kč";
     return item;
   }
@@ -269,13 +244,13 @@ function parsePackageCore(msg, subject, from, body, dateIso){
       item.status="Připraveno k vyzvednutí";
       const box = body.match(/(?:v|místě:)\s*(DPD[_ ]?box[^\n]{3,80}?)(?:\s*Kód|\.|\n)/i); if(box) item.pickup_place=box[1].trim();
       const code = body.match(/[Kk]ód pro otevření(?: schránky)?:\s*(\d{4,8})/); if(code) item.code=code[1];
-      const dl = body.match(/[Dd]o\s+(\d{1,2}\.\d{1,2}\.\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
+      const dl = body.match(/[Dd]o\s+(\d{1,2}\.\s?\d{1,2}\.\s?\d{4})(?:\s+(\d{1,2}:\d{2}))?/);
       if(dl){ item.deadline = numDateToIso(dl[1]); if(dl[2]) item.status+=" (do "+dl[2]+")"; }
       return item;
     }
     if(/doručíme|kurýr|doručení dnes|doručení zítra/i.test(subject+" "+body)){
       item.status="Kurýr doručí";
-      const dl = body.match(/(\d{1,2}\.\d{1,2}\.\d{4})/); if(dl) item.deadline=numDateToIso(dl[1]);
+      const dl = body.match(/(\d{1,2}\.\s?\d{1,2}\.\s?\d{4})/); if(dl) item.deadline=numDateToIso(dl[1]);
       return item;
     }
     return null;
@@ -308,7 +283,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     }
     if(/připraveno (na|k) (prodejně|vyzvednutí|odběru)|připraveno k vyzvednutí/i.test(s)){
       item.carrier="Alza prodejna"; item.status="Připraveno k vyzvednutí na prodejně";
-      const dl = body.match(/(?:vyzvednut[íi] do|do)\s+(?:\S+\s+)?(\d{1,2}\.\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+      const dl = body.match(/(?:vyzvednut[íi] do|do)\s+(?:\S+\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
       return item;
     }
     if(/doručíme|kurýr|doručení/i.test(s) && !/chyst[áa]me|expedujeme/i.test(s)){
@@ -363,7 +338,8 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     if(PICKED_RX.test(subject)){ item.status="Vyzvednuto"; item.picked=true; return item; }
     if(READY_RX.test(subject+" "+body)){
       item.status="Připraveno k vyzvednutí";
-      const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
+      const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i);
+  if(place && /^[A-Za-zÁ-ž0-9"']/.test(place[1].trim()) && !/cena|po[cč]et|celkem|dph|k[cč]\b|czk|n[aá]zev|objednavka/i.test(place[1])) item.pickup_place=place[1].trim();
       const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
       const code = body.match(/(?:kód|heslo)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code) item.code=code[1];
       return item;
@@ -462,6 +438,7 @@ function extractIds(subject, body){
   for(const m of t.matchAll(/(?:č[íi]slo (?:z[áa]silky|objedn[áa]vky|balí[kč]ku)|z[áa]silk[auy]?|objedn[áa]vk[auy]?|balí[kč]ek|track(?:ing)?(?: number)?|referenčn[íi] č[íi]slo|shipment)\s*(?:č\.?|číslo)?\s*[:\-]?\s*((?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,18})\b/gi)){
     const v=m[1].toUpperCase();
     if(/^(420|00420)\d+$/.test(v)) continue;            // phone numbers
+    if(/^[67]\d{8}$/.test(v)) continue;                 // czech mobile numbers (777066853)
     ids.add(v);
   }
   return [...ids].slice(0,10);
@@ -471,6 +448,8 @@ function shopFromText(body){
   if((m=body.match(/internetový obchod\s+([^\s].{1,45}?)\s+n[áa]m předal/i))) return m[1].trim();
   if((m=body.match(/zásilka od\s+([A-ZÁ-Ž0-9][^\n]{1,45}?)\s+je\s+připraven/i))) return m[1].trim();
   if((m=body.match(/Odes[íi]latel:?\s+(.{2,50}?)\s+(?:Č[íi]slo|PIN|Váha|Adresa|$)/i))) return m[1].trim();
+  if((m=body.match(/od\s+odes[ií]latele\s+([^\s]{2,45}?)[\s,]/i))) return m[1].trim();
+  if((m=body.match(/bal[íi]k(?:u|y)?\s+od\s+(.{2,90}?)\s+jsme/i))) return m[1].trim();
   return null;
 }
 function cleanShop(s){
@@ -490,12 +469,17 @@ function parsePackage(msg, subject, from, body, dateIso){
   const head = subject+" "+body.slice(0,2000);
   const strong = STRONG_READY_RX.test(head);
   const future = FUTURE_RX.test(head);
+  const deaHead = (subject+" ::: "+body.slice(0,700)).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  const isConfirm = (ORDER_CONFIRM_RX.test(subject)
+      || /dekujeme za (vasi |tvou )?objednavk|objednavka byla uspesne prijata|objednavku jsme prijali|potvrzeni objednavky|prijali jsme (vasi |tvou )?objednavk/i.test(deaHead))
+    && !/expedu|vyskladn|odeslan|odeslal|na ceste|je pripraven|k vyzvednuti/i.test(deaHead.split(" ::: ")[0]);
   let item = parsePackageCore(msg, subject, from, body, dateIso);
   if(item){
     item.ids = ids;
+    item._from = f;
     if(shopHint) item.shop = shopHint;
     if(!item.picked){
-      if(ORDER_CONFIRM_RX.test(subject)){ item.purchase = true; }
+      if(isConfirm){ item.purchase = true; item.transit=false; }
       else if(!item.deadline && (
           /vyčkejte|nenavštěvujte|čeká na předání|předán[ao]? dopravci|nachystaná? a čeká|převzali jsme (vaši )?zásilku/i.test(head) ||
           (future && !strong))){
@@ -508,11 +492,16 @@ function parsePackage(msg, subject, from, body, dateIso){
   /* core rejected it (order confirmation, dispatch notice…) — keep it as part of the story */
   if(!ids.length) return null;
   if(!/zásilk|balí[kč]|objednávk|kurýr|doručen|výdejn|box|track|shipment/i.test(head.toLowerCase())) return null;
+  if(PICKED_RX.test(subject+" "+body.slice(0,300))){
+    return {ids, products:[], shop:shopHint||cleanName(from)||null, _from:f, email_date:dateIso,
+      key:"bg-"+(msg.id||"").slice(0,24), carrier:null, status:"Vyzvednuto", picked:true,
+      pickup_place:null, deadline:null, price:null, tracking:null, code:null, note:null};
+  }
   const prods = extractProducts(subject, body, msg._html);
-  const rec = {ids, products:prods, shop:shopHint||cleanName(from)||null,
+  const rec = {ids, products:prods, shop:shopHint||cleanName(from)||null, _from:f,
           email_date:dateIso, key:"bg-"+(msg.id||"").slice(0,24), carrier:null, status:null,
           pickup_place:null, deadline:null, price:null, tracking:null, code:null, note:null};
-  if(!ORDER_CONFIRM_RX.test(subject) && FUTURE_RX.test(head)){
+  if(!isConfirm && FUTURE_RX.test(head)){
     rec.transit=true; rec.status="Na cestě";
     rec.carrier="Zásilka"; rec.tracking=ids.find(x=>/\d{6}/.test(x))||ids[0];
   } else { rec.purchase=true; rec.background=true; }
@@ -529,6 +518,44 @@ function assembleShipments(parsed){
       if(byId.has(id)) union(byId.get(id), idx); else byId.set(id, idx);
     }
   });
+  /* 2. kolo: e-mail dopravce a e-shopu spolu často nesdílí žádné číslo (PPL×Decathlon,
+     Balíkovna×iMore, Zásilkovna×sos-lekarna) — spoj je podle jména odesílatele v textu dopravce */
+  (function linkByShop(){
+    const CARRIER_RX=/(ppl\.cz|zasilkovna|packeta|balikovna|postaonline|ceskaposta|post\.cz|gls|dpd|wedo|onebox|dhl)/i;
+    const GENERIC=new Set(["service","services","email","mail","info","news","noreply","newsletter","shop","eshop","online","store","smtp","mailer"]);
+    const nrm=s=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
+    const roots=new Map();
+    parsed.forEach((p,idx)=>{ const r=find(idx); if(!roots.has(r)) roots.set(r,[]); roots.get(r).push(p); });
+    const meta=new Map();
+    for(const [r,it] of roots){
+      const m={carrier: it.every(i=>i._from && CARRIER_RX.test(i._from)), sshop:new Set(), ident:new Set(), min:0, max:0};
+      for(const i of it){
+        const sh=nrm(cleanShop(i.shop));
+        if(m.carrier){ const s0=String(cleanShop(i.shop)||""); if(sh.length>=4 && !/\b(ppl|z[áa]silkovna|packeta|bal[íi]kovna|po[sš]ta|gls|dpd|wedo|onebox|dhl)\b/i.test(s0)) m.sshop.add(sh); }
+        else{
+          if(sh.length>=4) m.ident.add(sh);
+          const dom=String(i._from||"").split("@")[1]||"";
+          for(const lab of dom.split(".")){ const n=nrm(lab); if(n.length>=4 && !GENERIC.has(n)) m.ident.add(n); }
+        }
+      }
+      const ds=it.map(i=>Date.parse(i.email_date)||0).filter(Boolean);
+      if(ds.length){ m.min=Math.min.apply(null,ds); m.max=Math.max.apply(null,ds); }
+      meta.set(r,m);
+    }
+    for(const [r,m] of meta){
+      if(!m.carrier || !m.sshop.size) continue;
+      let best=null, bestGap=Infinity;
+      for(const [r2,m2] of meta){
+        if(r2===r || m2.carrier || !m2.ident.size) continue;
+        let hit=false;
+        outer: for(const a of m.sshop){ for(const b of m2.ident){ if(a.includes(b)||b.includes(a)){ hit=true; break outer; } } }
+        if(!hit) continue;
+        const gap=Math.max(0, Math.max(m.min,m2.min)-Math.min(m.max,m2.max));
+        if(gap<=21*86400000 && gap<bestGap){ best=r2; bestGap=gap; }
+      }
+      if(best!=null) union(best, r);
+    }
+  })();
   const merged=new Map();
   parsed.forEach((p,idx)=>{ const r=find(idx); if(!merged.has(r)) merged.set(r,[]); merged.get(r).push(p); });
   const out=[];
@@ -553,6 +580,15 @@ function assembleShipments(parsed){
       card.picked = true; card.status = lastPicked.status || "Vyzvednuto";
       card.transit = false;
     } else if(lastReady){ card.transit=false; card.picked=false; card.status=lastReady.status; }
+    /* zombie: žádná nová zpráva → dávno to není "na cestě"; termín prošlý o víc než týden je vyřízená věc */
+    const lastEv = Math.max.apply(null, items.map(i=>Date.parse(i.email_date)||0).concat([0]));
+    const NOW = Date.now();
+    if(!card.picked && card.transit && lastEv && NOW-lastEv > 14*86400000) continue;
+    if(!card.picked && !card.transit){
+      const dl = card.deadline ? Date.parse(card.deadline) : NaN;
+      if(!isNaN(dl) && NOW-dl > 7*86400000) continue;
+      if(isNaN(dl) && lastEv && NOW-lastEv > 21*86400000) continue;
+    }
     for(const i of items){                                  // any mail in the story may know the shop or the goods
       const s=cleanShop(i.shop);
       if(s && (!card.shop || /^(zásilkovna|zásilka|allegro|temu)$/i.test(card.shop))) card.shop=s;
@@ -639,7 +675,7 @@ async function enrichProducts(onProgress){
           if(found.length) break;
         }
       }
-    }catch(e){ if(e.message==="AUTH") throw e; }
+    }catch(e){ if(e.message==="SETUP"||e.message==="KEY"||e.message==="SRV_GMAIL") throw e; }
     it.products=found; it.products_at=new Date().toISOString();
   }
   if(n) save(LS.data,state);
@@ -684,7 +720,7 @@ async function fetchMessages(queries, maxTotal){
   const out=[];
   for(const id of [...ids].slice(0,maxTotal)){
     try{ out.push(await gmail("messages/"+id,{format:"full"})); }
-    catch(e){ if(e.message==="AUTH") throw e; }
+    catch(e){ if(e.message==="SETUP"||e.message==="KEY"||e.message==="SRV_GMAIL") throw e; }
   }
   return out;
 }
@@ -720,7 +756,8 @@ function prune(list){
     });
 }
 async function runScan(){
-  if(!tokenValid()){ scanning=true; render(); requestToken(!load(LS.token)); return; }
+  const cfg=getPushCfg();
+  if(!cfg.url || !cfg.key){ message={text:"Nejdřív propojte aplikaci se serverem — klepněte na ⚙️ Server a vyplňte adresu a heslo.",kind:"err"}; render(); return; }
   scanning=true; message=null; render();
   try{
     const pkgMsgs = await fetchMessages([
@@ -751,8 +788,10 @@ async function runScan(){
     await enrichProducts((k,total)=>{ message={text:`Dohledávám obsah zásilek… (${k}/${total})`,kind:"info"}; render(); });
     message=null;
   }catch(e){
-    if(e.message==="AUTH"){ requestToken(false); return; }
-    message={text:"Skenování selhalo: "+esc(e.message)+". Zkuste to znovu.",kind:"err"};
+    if(e.message==="SETUP"){ message={text:"Nejdřív propojte aplikaci se serverem — ⚙️ Server.",kind:"err"}; }
+    else if(e.message==="KEY"){ message={text:"Server odmítl heslo (APP_KEY). Zkontrolujte ho v ⚙️ Server.",kind:"err"}; }
+    else if(e.message==="SRV_GMAIL"){ message={text:"Server se nedostal ke Gmailu — nejspíš vypršel jeho přístupový klíč. Postup obnovy je v ARCHITEKTUŘE (OAuth Playground → nový refresh token do Cloudflare).",kind:"err"}; }
+    else message={text:"Skenování selhalo: "+esc(e.message)+". Zkuste to znovu.",kind:"err"};
   }
   scanning=false; render();
 }
@@ -794,23 +833,28 @@ function cardHtml(i,kind){
   </div>`;
 }
 function setupHtml(){
+  const cfg=(load("hp_push_cfg")||load("hp_push_cfg_backup")||{url:"",key:""});
   return `<div class="setup">
-    <h2>První spuštění — propojení s Gmailem</h2>
-    <p>Aplikace čte vaše e-maily přímo z Gmailu přes oficiální Google API. Aby to Google dovolil, potřebuje aplikace vaše <b>Client ID</b> (vytvoříte si ho zdarma podle přiloženého návodu <code>NAVOD.md</code>, zabere to ~10 minut a dělá se jen jednou).</p>
-    <p>Vložte Client ID (končí na <code>.apps.googleusercontent.com</code>):</p>
-    <input id="cidInput" placeholder="např. 1234567890-abc123.apps.googleusercontent.com" autocomplete="off">
-    <button class="btn-scan" onclick="saveCid()">Uložit a pokračovat</button>
-    <p style="margin-top:12px;color:var(--muted);font-size:12.5px">Client ID není heslo — je to veřejný identifikátor vaší instance aplikace. Ukládá se jen do tohoto zařízení.</p>
+    <h2>První spuštění — propojení se serverem</h2>
+    <p>Aplikace čte poštu přes váš vlastní server (Cloudflare Worker), který jste si zřídili podle návodu <code>NAVOD-NOTIFIKACE.md</code>. Vyplňte jeho adresu a heslo (APP_KEY) — dělá se to jen jednou na každém zařízení.</p>
+    <input id="setupUrl" placeholder="https://vas-worker.workers.dev" autocomplete="off" value="${esc(cfg.url||"")}">
+    <input id="setupKey" placeholder="APP_KEY (heslo serveru)" autocomplete="off" value="${esc(cfg.key||"")}" style="margin-top:8px">
+    <button class="btn-scan" onclick="saveSetup()">Uložit a pokračovat</button>
+    <p style="margin-top:12px;color:var(--muted);font-size:12.5px">Údaje se ukládají jen do tohoto zařízení. Server čte Gmail jen pro čtení a data nikam dál neposílá.</p>
   </div>`;
 }
-function saveCid(){
-  const v=document.getElementById("cidInput").value.trim();
-  if(!v.endsWith(".apps.googleusercontent.com")){ alert("To nevypadá jako Client ID — mělo by končit na .apps.googleusercontent.com"); return; }
-  save(LS.clientId,v); render();
+function saveSetup(){
+  const url=document.getElementById("setupUrl").value.trim();
+  const key=document.getElementById("setupKey").value.trim();
+  if(!/^https:\/\/.+/.test(url)){ alert("Adresa serveru má začínat https:// — najdete ji v Cloudflare na kartě Workeru."); return; }
+  if(key.length<8){ alert("Heslo (APP_KEY) vypadá moc krátké — vložte stejné, jaké je v Cloudflare."); return; }
+  save("hp_push_cfg",{url:url.replace(/\/+$/,""),key});
+  message=null; render(); runScan();
 }
 function render(){
   const app=document.getElementById("app");
-  if(!getClientId()){ app.innerHTML=`<header><h1>Hlídač pošty<span class="dot">.</span></h1></header>`+setupHtml(); return; }
+  const _cfg=getPushCfg();
+  if(!_cfg.url || !_cfg.key){ app.innerHTML=`<header><h1>Hlídač pošty<span class="dot">.</span></h1></header>`+setupHtml(); return; }
 
   const pkgA=state.packages.filter(i=>!i.resolved), invA=state.invoices.filter(i=>!i.resolved);
 
@@ -822,12 +866,12 @@ function render(){
   app.innerHTML=`
     <header>
       <h1>Hlídač pošty<span class="dot">.</span></h1>
-      <div class="lastscan">${state.lastScan?"Naposledy: "+new Date(state.lastScan).toLocaleString("cs-CZ",{day:"numeric",month:"numeric",hour:"2-digit",minute:"2-digit"}):""}</div>
+      <div class="lastscan${state.lastScan && Date.now()-Date.parse(state.lastScan)>7200000 ? " old" : ""}">${state.lastScan?"Naposledy: "+new Date(state.lastScan).toLocaleString("cs-CZ",{day:"numeric",month:"numeric",hour:"2-digit",minute:"2-digit"}):""}</div>
     </header>
     <div class="scanbar">
       <button class="btn-scan" onclick="runScan()" ${scanning?"disabled":""}>${scanning?'<span class="spinner"></span> Prohledávám…':"📬 Prohledat e-maily"}</button>
       <button class="btn-sec" onclick="toggleNotifPanel()">🔔 Notifikace</button>
-      <button class="btn-sec" onclick="signOut()">Odhlásit</button>
+      <button class="btn-sec" onclick="editServer()">⚙️ Server</button>
     </div>
     ${notifPanelOpen?renderNotifPanel():""}
     ${message?`<div class="msg ${message.kind==="info"?"info":""}">${message.text}</div>`:""}
@@ -839,7 +883,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.3.2 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.4.1 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
@@ -899,7 +943,7 @@ async function enablePush(){
 }
 if("serviceWorker" in navigator){ try{ navigator.serviceWorker.register("sw.js"); }catch(e){} }
 
-window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveCid=saveCid; window.signOut=signOut; window.tab=tab; window.toggleNotifPanel=toggleNotifPanel; window.enablePush=enablePush;
+window.toggleResolved=toggleResolved; window.runScan=runScan; window.saveSetup=saveSetup; window.editServer=editServer; window.tab=tab; window.toggleNotifPanel=toggleNotifPanel; window.enablePush=enablePush;
 /* startup cleanup of stored data */
 if(!load("hp_migr_v5")){
   state.packages=(state.packages||[]).filter(i=>!(i.carrier==="Zásilkovna" && !i.resolved && !i.code));
@@ -931,16 +975,10 @@ state.packages=prune(state.packages); state.invoices=prune(state.invoices); save
 render();
 /* auto-refresh: on open, and whenever the app returns from background */
 function maybeAutoScan(minMinutes){
-  if(scanning || !getClientId()) return;
+  const cfg=getPushCfg();
+  if(scanning || !cfg.url || !cfg.key) return;
   const stale = !state.lastScan || Date.now()-Date.parse(state.lastScan) > minMinutes*60000;
-  if(!stale) return;
-  if(tokenValid()) runScan();
-  else if(load(LS.token)){
-    requestToken(false); // silent re-auth; on success the callback starts the scan
-    setTimeout(()=>{ // iOS often blocks the silent flow without a tap — say so instead of doing nothing
-      if(!scanning && !tokenValid()){ message={text:"Přihlášení ke Googlu vypršelo — klepněte na „Prohledat e-maily“, obnoví se jedním klepnutím.",kind:"info"}; render(); }
-    },4000);
-  }
+  if(stale) runScan();
 }
 window.addEventListener("load",()=>setTimeout(()=>maybeAutoScan(5),800));
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") setTimeout(()=>maybeAutoScan(5),300); });
