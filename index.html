@@ -633,8 +633,22 @@ function extractProducts(subject, text, html){
   const out=[];
   if(html){ const re=/alza\.cz\/kod\/[^"']+["'][^>]*>\s*([^<]{3,140}?)\s*<\/a>/gi; let r; while((r=re.exec(html))) out.push(r[1]); }
   if(out.length) return simplifyProducts(out);
+  /* produktové odkazy v HTML (sos-lekarna, shoptetové e-shopy…) */
+  if(html){ const rp=/href="https?:\/\/[^"]*(?:katalog|produkt|product|\/p\/|\/zbozi)[^"]*"[^>]*>\s*(?:-\s*)?([^<]{6,120}?)\s*<\/a>/gi; let r;
+    while((r=rp.exec(html))){ const t=r[1].replace(/\s+/g," ").trim(); if(/[a-zá-ž]{3}/i.test(t) && !/zobrazit|podrobnosti|sledov|obchodn|podmínk|katalog produktů|více/i.test(t)) out.push(t); } }
+  if(out.length) return simplifyProducts(out);
   const re2=/(.{3,90}?)\s+(\d{1,3})\s?(?:ks|x)\s+-?[\d\s]{1,10}(?:[,.]\d{2})?\s?(?:Kč|CZK)/g; let r2;
   while((r2=re2.exec(text||""))){ out.push(r2[1].split(/Kč|CZK|\d{1,3}\s?(?:ks|x)\b/).pop().split(/[:.;|•]\s+/).pop().split(/(?:Cena s DPH|s DPH|Počet|náz(?:vy|ev)\)?)\s*/i).pop()); }
+  if(out.length) return simplifyProducts(out);
+  /* tabulka "Produkt  Množství  Cena" (superionherbs aj.): název  počet  cena Kč */
+  const hasTable=/produkt\s+množství\s+cena|název\s+cena\s+počet|cena\s+počet\s+cena celkem/i.test(text||"");
+  if(hasTable){
+    const re3=/([A-ZÁ-Ž][^\n|]{5,90}?)\s+(\d{1,3})\s+(\d[\d\s]{0,9}(?:[,.]\d{1,2})?)\s*Kč/g; let r3;
+    while((r3=re3.exec(text||""))){
+      const t=r3[1].replace(/^.*(?:produkt\s+množství\s+cena|název\s+cena\s+po[cč]et\S*)\s*/i,"").replace(/^\d+\.\s*-?\s*/,"").replace(/\s+/g," ").trim();
+      if(/[a-zá-ž]{3}/i.test(t) && !/mezisoučet|celkem|dph|způsob|doprav|adresa|produkt množství|objednávk/i.test(t)) out.push(t);
+    }
+  }
   return simplifyProducts(out);
 }
 function productLine(i){
@@ -883,7 +897,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.4.1 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.4.2 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
