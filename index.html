@@ -200,7 +200,7 @@ function cleanName(from){ return from.replace(/<.*/,"").replace(/["']/g,"").repl
    "Order placed / preparing / on the way / marketing" are ignored on purpose. */
 const MARKETING = /(sleva|slevu|slevy|%\s*off|\d+\s*%|newsletter|akce|savings|deal|kup[oó]n|voucher|doporučujeme|inspirace)/i;
 const READY_RX = /(připraven[aoyé]?\s+(k|na|v)\s+(vyzvednutí|výdeji|odběru|výdejním|alzaboxu)|k vyzvednutí|vyzvedn[ěe]te si|čeká na v[áa]s|na v[áa]s ček[áa]|čeká na vyzvednutí|už (je )?na (výdejním )?místě|na výdejním místě|poslední (den|možnost)|ready for pick.?up|arrived at the pick.?up|pick.?up location|dorazil[ao]? (do|na)|přijďte si|stále čeká)/i;
-const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byl[ao]? doručen[ao]?\b(?!\s+(na|do)\s+(výdejn|boxu|alzabox|odběr|pobočk|míst))|díky za vyzvednutí|thank you for picking up|potvrzen[íi] o převzetí bal[íi]ku|je bal[íi]k ve [Vv]ašich rukou)/i;
+const PICKED_RX = /(byla vyzvednuta|byl vyzvednut|jste (si )?vyzvedli|byl[ao]? doručen[ao]?\b(?!\s+(na|do)\s+(výdejn|boxu|alzabox|odběr|pobočk|míst))|díky za vyzvednutí|thank you for picking up|potvrzen[íi] o převzetí bal[íi]ku|je bal[íi]k ve [Vv]ašich rukou|doručili jsme\s+(v[áa]š\s+)?bal[íi]k(?!\s*(do|na)\b)|jsme doručili bal[íi]k(?!\s*(do|na)\b)|př[íi]jemce převzal)/i;
 
 function parsePackageCore(msg, subject, from, body, dateIso){
   const f = from.toLowerCase();
@@ -276,7 +276,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
         if(vals[4]) item.status += " (do "+vals[4]+")";
       } else {
         const code = body.match(/K[oó]d pro vyzvednut[íi][^\d]{0,120}?(\d{3}\s?\d{3})/); if(code) item.code=code[1];
-        const dl = body.match(/(?:vyzvednut[íi] do|vyzvedn[ěe]te[^.]{0,40}?do)\s+(?:\S+\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+        const dl = body.match(/(?:vyzvednut[íi] do|vyzvedn[ěe]te[^.]{0,40}?do)\s+(?:\S+\s+){0,6}?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
       }
       const prods = extractProducts(subject, body, msg._html); if(prods.length) item.products=prods;
       return item;
@@ -339,7 +339,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     if(READY_RX.test(subject+" "+body)){
       item.status="Připraveno k vyzvednutí";
       const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i);
-  if(place && /^[A-Za-zÁ-ž0-9"']/.test(place[1].trim()) && !/cena|po[cč]et|celkem|dph|k[cč]\b|czk|n[aá]zev|objednavka/i.test(place[1])) item.pickup_place=place[1].trim();
+  if(place && /^[A-Za-zÁ-ž0-9"']/.test(place[1].trim()) && !/cena|po[cč]et|celkem|dph|k[cč]\b|czk|n[aá]zev|objednavka|@|pracovn[íi] dn|infolink/i.test(place[1])) item.pickup_place=place[1].trim();
       const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
       const code = body.match(/(?:kód|heslo)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code) item.code=code[1];
       return item;
@@ -359,7 +359,8 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
     const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*(\d{4,8})\b/i); if(code) item.code=code[1];
     const nm = body.match(/Název:\s*(.{3,70}?)\s*(?:Adresa|Mapa|Otev[íi]rac|$)/);
-    const place = nm || body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu|Balíkovn[aě])\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
+    const place = nm || body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu|Balíkovn[aě])\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i);
+    if(place && !/@|pracovn[íi] dn|kontakt|infolink/i.test(place[1])) item.pickup_place=place[1].trim();
     return item;
   }
 
@@ -435,7 +436,7 @@ function extractIds(subject, body){
     ids.add("Z"+digits); ids.add(digits);               // link "Z 442 2131 684" with plain "4422131684"
   }
   /* bare ids count only right after a shipment/order word — footer noise (IČO, DIČ, phones) has other labels */
-  for(const m of t.matchAll(/(?:č[íi]slo (?:z[áa]silky|objedn[áa]vky|balí[kč]ku)|z[áa]silk[auy]?|objedn[áa]vk[auy]?|balí[kč]ek|track(?:ing)?(?: number)?|referenčn[íi] č[íi]slo|shipment)\s*(?:č\.?|číslo)?\s*[:\-]?\s*((?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,18})\b/gi)){
+  for(const m of t.matchAll(/(?:č[íi]slo (?:z[áa]silky|objedn[áa]vky|balí[kč]ku)|z[áa]silk[auy]?|objedn[áa]vk[auy]?|balí[kč]ek|bal[íi]k(?:u|em)?|track(?:ing)?(?: number)?|referenčn[íi] č[íi]slo|shipment)\s*(?:č\.?|číslo)?\s*[:\-]?\s*((?=[A-Za-z0-9]*\d)[A-Za-z0-9]{8,18})\b/gi)){
     const v=m[1].toUpperCase();
     if(/^(420|00420)\d+$/.test(v)) continue;            // phone numbers
     if(/^[67]\d{8}$/.test(v)) continue;                 // czech mobile numbers (777066853)
@@ -443,13 +444,17 @@ function extractIds(subject, body){
   }
   return [...ids].slice(0,10);
 }
-function shopFromText(body){
-  let m;
-  if((m=body.match(/internetový obchod\s+([^\s].{1,45}?)\s+n[áa]m předal/i))) return m[1].trim();
-  if((m=body.match(/zásilka od\s+([A-ZÁ-Ž0-9][^\n]{1,45}?)\s+je\s+připraven/i))) return m[1].trim();
-  if((m=body.match(/Odes[íi]latel:?\s+(.{2,50}?)\s+(?:Č[íi]slo|PIN|Váha|Adresa|$)/i))) return m[1].trim();
-  if((m=body.match(/od\s+odes[ií]latele\s+([^\s]{2,45}?)[\s,]/i))) return m[1].trim();
-  if((m=body.match(/bal[íi]k(?:u|y)?\s+od\s+(.{2,90}?)\s+jsme/i))) return m[1].trim();
+function shopFromText(input){
+  /* vzory se zkoušejí po segmentech (předmět ::: tělo), ať úlovek nepřeleze z jednoho do druhého */
+  for(const body of String(input||"").split(" ::: ")){
+    let m;
+    if((m=body.match(/internetový obchod\s+([^\s].{1,45}?)\s+n[áa]m předal/i))) return m[1].trim();
+    if((m=body.match(/zásilka od\s+([A-ZÁ-Ž0-9][^\n]{1,45}?)\s+je\s+připraven/i))) return m[1].trim();
+    if((m=body.match(/Odes[íi]latel:?\s+(.{2,50}?)\s+(?:Č[íi]slo|PIN|Váha|Adresa|$)/i))) return m[1].trim();
+    if((m=body.match(/od\s+odes[ií]latele\s+([^\s]{2,45}?)[\s,]/i))) return m[1].trim();
+    if((m=body.match(/bal[íi]k(?:u|y)?\s+od\s+([^\s]{2,45}?)\s+je\s+připraven/i))) return m[1].trim();
+    if((m=body.match(/bal[íi]k(?:u|y)?\s+od\s+([^\n]{2,90}?)\s+jsme/i))) return m[1].trim();
+  }
   return null;
 }
 function cleanShop(s){
@@ -465,7 +470,7 @@ function parsePackage(msg, subject, from, body, dateIso){
   }
   if(SENDER_BLACKLIST_RX.test(f) || MARKETING.test(subject)) return parsePackageCore(msg, subject, from, body, dateIso);
   const ids = extractIds(subject, body);
-  const shopHint = cleanShop(shopFromText(body));
+  const shopHint = cleanShop(shopFromText(subject+" ::: "+body));
   const head = subject+" "+body.slice(0,2000);
   const strong = STRONG_READY_RX.test(head);
   const future = FUTURE_RX.test(head);
@@ -514,7 +519,9 @@ function assembleShipments(parsed){
   const union=(a,b)=>{ a=find(a); b=find(b); if(a!==b) groups[b].parent=a; };
   parsed.forEach((p,idx)=>{
     groups.push({parent:idx, items:[p]});
-    for(const id of (p.ids||[])){
+    const gids=[...(p.ids||[])];
+    if(p.key && !/^(bg-|g2-|abuy-|temu-|shp-)/.test(p.key)) gids.push(p.key);
+    for(const id of gids){
       if(byId.has(id)) union(byId.get(id), idx); else byId.set(id, idx);
     }
   });
@@ -897,7 +904,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.4.2 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.4.3 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
