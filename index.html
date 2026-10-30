@@ -340,7 +340,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
       item.status="Připraveno k vyzvednutí";
       const place = body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i);
   if(place && /^[A-Za-zÁ-ž0-9"']/.test(place[1].trim()) && !/cena|po[cč]et|celkem|dph|k[cč]\b|czk|n[aá]zev|objednavka|@|pracovn[íi] dn|infolink/i.test(place[1])) item.pickup_place=place[1].trim();
-      const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+      const dl = body.match(/(?:do|nejpozději)\s+(?:dne\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
       const code = body.match(/(?:kód|heslo)[^:\d]{0,30}:?\s*([A-Z0-9]{4,8})\b/i); if(code) item.code=code[1];
       return item;
     }
@@ -356,7 +356,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     if(/připraven|k vyzvednutí|vyzvedněte/i.test(subject+" "+body)){ item.status="Připraveno k vyzvednutí"; }
     else if(/doručíme|kurýr|doručení dnes|doručení zítra/i.test(subject+" "+body)){ item.status="Kurýr doručí"; }
     else return null;
-    const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+    const dl = body.match(/(?:do|nejpozději)\s+(?:dne\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
     const code = body.match(/(?:kód|heslo|PIN)[^:\d]{0,30}:?\s*(\d{4,8})\b/i); if(code) item.code=code[1];
     const nm = body.match(/Název:\s*(.{3,70}?)\s*(?:Adresa|Mapa|Otev[íi]rac|$)/);
     const place = nm || body.match(/(?:výdejn[íi]m?\s*míst[ěeoa]+|na adrese|v boxu|Balíkovn[aě])\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i);
@@ -373,7 +373,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
     if(!READY_RX.test(subject+" "+body)) return null;
     item.status="Připraveno k vyzvednutí";
     const place = body.match(/(?:místo vyzvednutí|výdejn[íi]m? míst[ěeoa]+|na adrese)\s*[:\-]?\s*(.{5,90}?)(?:\.\s|$)/i); if(place) item.pickup_place=place[1].trim();
-    const dl = body.match(/(?:do|nejpozději|před)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+    const dl = body.match(/(?:do|nejpozději|před)\s+(?:dne\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
     if(!item.key) item.key = "temu-"+(item.deadline || (msg.id||subject).slice(0,24));
     return item;
   }
@@ -396,7 +396,7 @@ function parsePackageCore(msg, subject, from, body, dateIso){
   item.status = picked ? "Vyzvednuto / doručeno" : "Připraveno k vyzvednutí";
   if(picked) item.picked=true;
   const tn = subject.match(/\b([A-Z0-9]*\d[A-Z0-9]{6,18})\b/) || body.slice(0,600).match(/\b([A-Z]{0,3}\d{8,16})\b/);
-  const dl = body.match(/(?:do|nejpozději)\s+(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
+  const dl = body.match(/(?:do|nejpozději)\s+(?:dne\s+)?(\d{1,2}\.\s?\d{1,2}\.(?:\s?\d{4})?)/i); if(dl) item.deadline=numDateToIso(dl[1]);
   const domain = (f.match(/@([a-z0-9.\-]+)/)||[])[1]||"x";
   if(tn){ item.tracking=tn[1]; item.key="gen-"+tn[1]; }
   else if(item.deadline) item.key="g2-"+domain+"-"+item.deadline;
@@ -770,6 +770,13 @@ function prune(list){
   return (list||[])
     .filter(i=>!/^gen(?!-)/.test(String(i.key||"")) && !/^gid-/.test(String(i.key||""))) // legacy per-email cards, superseded by merged ones
     .filter(i=>!(!i.transit && i.status && /(čeká na přepravu|na cestě|chystáme|expedov|zpracovává|savings|%|sleva|na vás stále čeká$)/i.test(i.status) && !i.resolved && !/^(Připraveno|Kurýr|Nevyzvednuto)/.test(i.status))) // stale non-actionable cards from older versions
+    .filter(i=>{ /* zombie z dřívějška: transit bez nové zprávy 14 dní, prošlý termín přes týden */
+      if(i.resolved || i.picked) return true;
+      const last=Date.parse(i.email_date||"");
+      if(i.transit && !isNaN(last) && now-last > 14*86400000) return false;
+      if(!i.transit && i.deadline){ const dl=Date.parse(i.deadline); if(!isNaN(dl) && now-dl > 7*86400000) return false; }
+      return true;
+    })
     .filter(i=>{
       if(!i.resolved) return true;
       if(!i.resolved_at){ i.resolved_at=new Date().toISOString(); return true; } // migrate old items
@@ -904,7 +911,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.4.3 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.4.4 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
