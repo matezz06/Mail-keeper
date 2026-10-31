@@ -152,6 +152,7 @@ function editServer(){
 }
 
 /* ================= Gmail fetch (přes vlastní server — v1.4) ================= */
+let RATE_BACKOFF_MS = 1500;   // testy si zkracují
 async function gmail(path, params){
   const cfg = getPushCfg();
   if(!cfg.url || !cfg.key) throw new Error("SETUP");
@@ -161,11 +162,18 @@ async function gmail(path, params){
     else if(v!=null) url.searchParams.set(k,v);
   }
   url.searchParams.set("k", cfg.key);
-  const r = await fetch(url);
-  if(r.status===401) throw new Error("KEY");
-  if(r.status===502) throw new Error("SRV_GMAIL");
-  if(!r.ok) throw new Error("Server: "+r.status);
-  return r.json();
+  for(let attempt=0;;attempt++){
+    const r = await fetch(url);
+    if(r.status===401) throw new Error("KEY");
+    if(r.status===502) throw new Error("SRV_GMAIL");
+    if(r.status===403 || r.status===429){
+      if(attempt>=3) throw new Error("RATE");
+      await new Promise(res=>setTimeout(res, RATE_BACKOFF_MS*Math.pow(2,attempt)));
+      continue;
+    }
+    if(!r.ok) throw new Error("Server: "+r.status);
+    return r.json();
+  }
 }
 function b64(s){ return decodeURIComponent(escape(atob(s.replace(/-/g,"+").replace(/_/g,"/")))); }
 function extractBody(payload){
@@ -742,6 +750,7 @@ async function fetchMessages(queries, maxTotal){
   for(const id of [...ids].slice(0,maxTotal)){
     try{ out.push(await gmail("messages/"+id,{format:"full"})); }
     catch(e){ if(e.message==="SETUP"||e.message==="KEY"||e.message==="SRV_GMAIL") throw e; }
+    await new Promise(r=>setTimeout(r,45));
   }
   return out;
 }
@@ -819,6 +828,7 @@ async function runScan(){
     if(e.message==="SETUP"){ message={text:"Nejdřív propojte aplikaci se serverem — ⚙️ Server.",kind:"err"}; }
     else if(e.message==="KEY"){ message={text:"Server odmítl heslo (APP_KEY). Zkontrolujte ho v ⚙️ Server.",kind:"err"}; }
     else if(e.message==="SRV_GMAIL"){ message={text:"Server se nedostal ke Gmailu — nejspíš vypršel jeho přístupový klíč. Postup obnovy je v ARCHITEKTUŘE (OAuth Playground → nový refresh token do Cloudflare).",kind:"err"}; }
+    else if(e.message==="RATE"){ message={text:"Síť teď sken přibrzdila (ochrana Cloudflare na sdílených mobilních adresách). Počkejte minutu a klepněte na 📬 znovu — na Wi-Fi se to zpravidla neděje.",kind:"err"}; }
     else message={text:"Skenování selhalo: "+esc(e.message)+". Zkuste to znovu.",kind:"err"};
   }
   scanning=false; render();
@@ -911,7 +921,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.4.4 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v1.4.5 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
