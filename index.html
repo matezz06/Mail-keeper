@@ -83,6 +83,7 @@
 
 <script>
 "use strict";
+const APP_VERSION="1.5.2";
 /* ================= config & storage ================= */
 const LS = {
   clientId: "hp_client_id",
@@ -691,6 +692,18 @@ async function enrichProducts(onProgress){
           if(found.length) break;
         }
       }
+      // obchod s doménou (aktin.cz, sos-lekarna.cz…): starší e-maily od něj často nesou obsah objednávky
+      if(!found.length && it.shop && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(it.shop.trim()) && it.email_date){
+        const t=Date.parse(it.email_date);
+        for(const id of await listIds("from:"+it.shop.trim()+" newer_than:90d", 6)){
+          const msg=await gmail("messages/"+id,{format:"full"});
+          const d=+msg.internalDate;
+          if(!(d<=t+86400000 && t-d<21*86400000)) continue;      // nákup až 21 dní před oznámením o uložení
+          const {text,html}=extractBody(msg.payload);
+          found=extractProducts(header(msg,"Subject"),text,html);
+          if(found.length) break;
+        }
+      }
       // Allegro/Temu/WeDo relays: shop mails don't carry the tracking number — match purchases by date instead
       if(!found.length && /allegro|temu|wedo/i.test((it.shop||"")+" "+(it.carrier||"")) && it.email_date){
         const t=Date.parse(it.email_date);
@@ -740,7 +753,7 @@ function parseInvoice(msg, subject, from, body, dateIso){
 const MSG_CACHE_KEY="hp_msgcache_v1";
 function msgCacheLoad(){
   const c=load(MSG_CACHE_KEY);
-  return (c && c.ver==="v1.5" && c.items) ? c : {ver:"v1.5", items:{}};
+  return (c && c.ver===APP_VERSION && c.items) ? c : {ver:APP_VERSION, items:{}};
 }
 function msgCacheSave(c){
   const now=Date.now();
@@ -808,6 +821,7 @@ function prune(list){
       const last=Date.parse(i.email_date||"");
       if(i.transit && !isNaN(last) && now-last > 14*86400000) return false;
       if(!i.transit && i.deadline){ const dl=Date.parse(i.deadline); if(!isNaN(dl) && now-dl > 7*86400000) return false; }
+      if(!i.transit && !i.deadline && !isNaN(last) && now-last > 14*86400000) return false;
       return true;
     })
     .filter(i=>{
@@ -962,7 +976,7 @@ function render(){
       ? `<div class="empty"><b>${isPkg?"Zatím žádné balíčky.":"Zatím žádné faktury."}</b><br>Klepněte na „Prohledat e-maily“ — při prvním spuštění vás Google požádá o souhlas se čtením schránky.</div>`
       : active.map(i=>cardHtml(i,tab)).join("")
         + (resolved.length?`<div class="section-label">${isPkg?"Vyzvednuté":"Zaplacené"} (${resolved.length})</div>`+resolved.map(i=>cardHtml(i,tab)).join(""):"")}
-    <footer>Hlídač pošty v1.5.1 · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
+    <footer>Hlídač pošty v${APP_VERSION} · Data i přihlášení zůstávají jen ve vašem zařízení. Aplikace má ke Gmailu přístup pouze pro čtení. Na iPhonu: Sdílet → Přidat na plochu.</footer>`;
 }
 /* ================= push notifikace ================= */
 let notifPanelOpen=false;
